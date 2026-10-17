@@ -35,6 +35,13 @@ def _mock_init_app_fonts(monkeypatch):
     monkeypatch.setattr(utils.font_utils, "init_app_fonts", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _disable_sub_auto_update(monkeypatch):
+    """Ensure no unmocked subscription update threads are spawned during tests."""
+    from utils.subscription_manager import SubscriptionManager
+    monkeypatch.setattr(SubscriptionManager, "update_all", lambda self: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _drain_qt_threadpool():
     """Let queued QRunnable work finish before the QApplication is destroyed."""
@@ -77,5 +84,10 @@ def main_win(qapp, monkeypatch, tmp_path):
     win._refresh_server_list()
     if win.server_panel._server_items:
         win.server_panel._server_items[0].radio.setChecked(True)
-    return win
+    yield win
+    try:
+        win.close()
+        win.deleteLater()
+    except Exception:
+        pass
 

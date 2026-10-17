@@ -32,10 +32,21 @@ jobs:
           pip install -e .
           pip install nuitka zstandard
 
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\Nuitka\Nuitka\Cache
+            ~\AppData\Local\ccache
+          key: nuitka-windows-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-windows-${{ hashFiles('pyproject.toml') }}-
+            nuitka-windows-
+
       - name: Download sing-box and wintun
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path bin/sing-box
+          New-Item -ItemType Directory -Force -Path bin/singbox
           
           # Fetch sing-box 1.14.3 (Windows x64)
           $sbVersion = "1.14.3"
@@ -43,14 +54,17 @@ jobs:
           Write-Host "Downloading sing-box from $sbUrl..."
           Invoke-WebRequest -Uri $sbUrl -OutFile singbox.zip
           Expand-Archive -Path singbox.zip -DestinationPath temp_sb
-          Get-ChildItem -Path temp_sb -Filter "sing-box.exe" -Recurse | Move-Item -Destination "bin/sing-box/sing-box.exe"
+          $sbExe = (Get-ChildItem -Path temp_sb -Filter "sing-box.exe" -Recurse).FullName
+          Copy-Item $sbExe "bin/singbox/sing-box.exe" -Force
+          Copy-Item $sbExe "bin/sing-box.exe" -Force
           
           # Fetch wintun.dll (for TUN mode on Windows)
           $wintunUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
           Write-Host "Downloading wintun driver..."
           Invoke-WebRequest -Uri $wintunUrl -OutFile wintun.zip
           Expand-Archive -Path wintun.zip -DestinationPath temp_wintun
-          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/sing-box/wintun.dll"
+          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/singbox/wintun.dll" -Force
+          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/wintun.dll" -Force
 
       - name: Compile with Nuitka (Native C++)
         shell: pwsh
@@ -59,7 +73,6 @@ jobs:
             --standalone `
             --assume-yes-for-downloads `
             --enable-plugin=pyside6 `
-            --enable-plugin=anti-bloat `
             --noinclude-pytest-mode=nofollow `
             --noinclude-unittest-mode=nofollow `
             --noinclude-qt-plugins=qml,accessible `
@@ -72,12 +85,15 @@ jobs:
             --include-data-files=icon.svg=icon.svg `
             --include-data-files=icon.ico=icon.ico `
             --include-data-files=pyproject.toml=pyproject.toml `
-            --include-data-dir=bin=bin `
             main.py
 
           if (Test-Path "dist/main.dist") {
             Move-Item -Path "dist/main.dist" -Destination "dist/Socksicle.dist" -Force
           }
+
+          # Copy bin directory and wintun driver into standalone distribution
+          Copy-Item -Path "bin" -Destination "dist/Socksicle.dist/bin" -Recurse -Force
+          Copy-Item -Path "bin/wintun.dll" -Destination "dist/Socksicle.dist/wintun.dll" -Force
 
       - name: Resolve Version
         id: get_version
@@ -125,6 +141,14 @@ jobs:
             dist-installer/*.exe
             *.zip
 
+      - name: Publish Windows Artifacts to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-installer/*.exe
+            *.zip
+
   build-linux:
     name: Build Linux (AppImage)
     runs-on: ubuntu-22.04
@@ -153,14 +177,26 @@ jobs:
           pip install -e .
           pip install nuitka zstandard
 
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/Nuitka
+            ~/.cache/ccache
+          key: nuitka-linux-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-linux-${{ hashFiles('pyproject.toml') }}-
+            nuitka-linux-
+
       - name: Download sing-box (Linux amd64)
         run: |
-          mkdir -p bin/sing-box
+          mkdir -p bin/singbox
           sbVersion="1.14.3"
           sbUrl="https://github.com/SagerNet/sing-box/releases/download/v${sbVersion}/sing-box-${sbVersion}-linux-amd64.tar.gz"
           echo "Downloading sing-box from $sbUrl..."
-          curl -sSL "$sbUrl" | tar -xz -C bin/sing-box --strip-components=1
-          chmod +x bin/sing-box/sing-box
+          curl -sSL "$sbUrl" | tar -xz -C bin/singbox --strip-components=1
+          cp bin/singbox/sing-box bin/sing-box
+          chmod +x bin/singbox/sing-box bin/sing-box
 
       - name: Resolve Version
         run: |
@@ -181,7 +217,6 @@ jobs:
             --standalone \
             --assume-yes-for-downloads \
             --enable-plugin=pyside6 \
-            --enable-plugin=anti-bloat \
             --noinclude-pytest-mode=nofollow \
             --noinclude-unittest-mode=nofollow \
             --noinclude-qt-plugins=qml,accessible \
@@ -191,7 +226,6 @@ jobs:
             --include-data-dir=assets=assets \
             --include-data-files=icon.svg=icon.svg \
             --include-data-files=pyproject.toml=pyproject.toml \
-            --include-data-dir=bin=bin \
             main.py
 
           if [ -d "dist/main.dist" ]; then
@@ -204,10 +238,12 @@ jobs:
           mkdir -p AppDir/usr/share/applications
           mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
           
-          # Copy standalone build
+          # Copy standalone build and binary dependencies
           cp -r dist/Socksicle.dist/* AppDir/usr/bin/
+          cp -r bin AppDir/usr/bin/
           chmod +x AppDir/usr/bin/socksicle
-          chmod +x AppDir/usr/bin/bin/sing-box/sing-box 2>/dev/null || true
+          chmod +x AppDir/usr/bin/bin/sing-box 2>/dev/null || true
+          chmod +x AppDir/usr/bin/bin/singbox/sing-box 2>/dev/null || true
 
           # Create AppRun entrypoint
           cat << 'EOF' > AppDir/AppRun
@@ -246,22 +282,8 @@ jobs:
           name: socksicle-linux-artifacts
           path: "*.AppImage"
 
-  publish-release:
-    name: Publish Release Artifacts
-    needs: [build-windows, build-linux]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download all built artifacts
-        uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-
-      - name: Publish all artifacts to GitHub Release
+      - name: Publish Linux Artifacts to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            *.exe
-            *.zip
-            *.AppImage
+          files: "*.AppImage"

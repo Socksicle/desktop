@@ -17,7 +17,13 @@ def main_win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
     monkeypatch.setattr("utils.platform_utils.get_config_dir", lambda: tmp_path)
     tw._reset()
-    return RoundedWindow()
+    win = RoundedWindow()
+    yield win
+    try:
+        win.close()
+        win.deleteLater()
+    except Exception:
+        pass
 
 
 def _tall_scroll(qapp):
