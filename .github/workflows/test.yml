@@ -3,18 +3,38 @@ name: Tests
 on:
   push:
     branches: [main, master]
+    # Path filters are push-only on purpose: a skipped workflow on pull_request
+    # leaves its required check pending and blocks the merge.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
+      # Report every failing combination instead of cancelling the rest.
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Pinned labels: ubuntu-latest moves to 26.04 during November 2026.
+        os: [ubuntu-24.04, windows-2025]
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -27,10 +47,10 @@ jobs:
             libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libx11-xcb1
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest tests/ -v
+          python -m pytest tests/ -q --durations=10
