@@ -57,7 +57,13 @@ jobs:
         run: |
           python -m nuitka `
             --standalone `
+            --assume-yes-for-downloads `
             --enable-plugin=pyside6 `
+            --enable-plugin=anti-bloat `
+            --noinclude-pytest-mode=nofollow `
+            --noinclude-unittest-mode=nofollow `
+            --noinclude-qt-plugins=qml,accessible `
+            --nofollow-import-to=PySide6.QtWebEngine,PySide6.QtQml,PySide6.QtQuick,PySide6.QtSql,PySide6.QtMultimedia,unittest,pydoc,tkinter `
             --windows-console-mode=disable `
             --windows-icon-from-ico=icon.ico `
             --output-dir=dist `
@@ -173,7 +179,13 @@ jobs:
         run: |
           python -m nuitka \
             --standalone \
+            --assume-yes-for-downloads \
             --enable-plugin=pyside6 \
+            --enable-plugin=anti-bloat \
+            --noinclude-pytest-mode=nofollow \
+            --noinclude-unittest-mode=nofollow \
+            --noinclude-qt-plugins=qml,accessible \
+            --nofollow-import-to=PySide6.QtWebEngine,PySide6.QtQml,PySide6.QtQuick,PySide6.QtSql,PySide6.QtMultimedia,unittest,pydoc,tkinter \
             --output-dir=dist \
             --output-filename=socksicle \
             --include-data-dir=assets=assets \
@@ -212,7 +224,7 @@ jobs:
           Exec=socksicle
           Icon=socksicle
           Type=Application
-          Categories=Network;Proxy;
+          Categories=Network;Security;X-Proxy;
           Comment=Cross-platform proxy client with Material 3 UI
           Terminal=false
           EOF
