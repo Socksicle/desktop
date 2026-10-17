@@ -137,7 +137,7 @@ class LinuxPathTest(unittest.TestCase):
         app_inst = mock.Mock(spec=[
             "setApplicationName", "setDesktopFileName", "setWindowIcon",
             "setHighDpiScaleFactorRoundingPolicy", "installNativeEventFilter",
-            "setStyle", "setPalette", "exec",
+            "setStyleSheet", "setStyle", "setPalette", "exec",
         ])
         app_inst.exec.return_value = 0
         with mock.patch.object(main, "QApplication",
