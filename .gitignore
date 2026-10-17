@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.whl
+.installed.cfg
+*.egg
+.venv
+venv/
+venv.bak/
+ENV/
+
+# Testing
+.pytest_cache/
+.pytest_tmp/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Secrets
+.env
+
+# Configuration/Data
+servers.json
+settings.json
+subscriptions.json
+drawer.json
+.config/
+
+# Engines
+bin/
+
+# Local build artifacts & Executables
+*.exe
+*.dll
+*.pyd
+*.so
+*.dylib
+
+# PyInstaller
+*.spec
+
+# Nuitka compiler artifacts
+*.build/
+*.dist/
+*.onefile-build/
+dist-installer/
+
+# Developer internal tools
+adevwet/
+
+# OS
+.DS_Store
+Thumbs.db
+

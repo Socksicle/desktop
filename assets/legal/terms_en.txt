@@ -1,0 +1,90 @@
+SOCKSICLE - TERMS OF SERVICE
+=============================================================
+Last Updated: September 2026
+
+Please read these Terms of Service ("Terms") carefully before using the
+Socksicle application ("the Application", "Software").
+By installing, copying, or using the Application, you agree to be bound
+by these Terms. If you do not agree, do not install or use the Application.
+
+
+1. NATURE OF THE APPLICATION
+-------------------------------------------------------------
+- Socksicle is an open-source, client-side network management tool and proxy
+  client utilizing the sing-box-lx core.
+- The developers of Socksicle DO NOT provide, sell, operate, or maintain any
+  proxy servers, VPN nodes, or internet transit services.
+- The Application is solely a software client designed to process and route
+  traffic according to configurations and subscriptions supplied by the user.
+
+
+2. ACCEPTABLE AND LAWFUL USE
+-------------------------------------------------------------
+- You agree to use the Application exclusively for lawful purposes and in
+  full compliance with all applicable local, national, and international laws,
+  regulations, and third-party terms.
+- You shall NOT use the Application for:
+  a) Any activity that infringes copyright, intellectual property, or other
+     rights of any person or entity;
+  b) Distributing malware, executing cyberattacks, port scanning, or unauthorized
+     network intrusion;
+  c) Transmitting illegal, harmful, threatening, or abusive content;
+  d) Bypassing legal restrictions in violation of relevant laws and terms.
+- You assume sole responsibility for any traffic or data routed through the
+  Application on your device.
+
+
+3. THIRD-PARTY SERVERS, SUBSCRIPTIONS, AND CONTENT
+-------------------------------------------------------------
+- The Application allows you to import third-party subscription URLs and
+  connect to external servers.
+- The developers do not monitor, control, endorse, or verify any third-party
+  servers, subscriptions, or network destinations.
+- We bear no responsibility for the uptime, availability, speed, security,
+  or legality of any third-party proxy server or subscription service.
+
+
+4. DISCLAIMER OF WARRANTIES
+-------------------------------------------------------------
+THE APPLICATION IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY
+OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+TITLE, AND NON-INFRINGEMENT.
+
+THE DEVELOPERS DO NOT WARRANT THAT:
+- THE APPLICATION WILL MEET ALL YOUR SPECIFIC REQUIREMENTS;
+- OPERATION WILL BE UNINTERRUPTED, TIMELY, SECURE, OR ERROR-FREE;
+- ANY CONNECTION OR PROXY NODE WILL REMAIN REACHABLE OR FREE FROM BLOCKING.
+
+
+5. LIMITATION OF LIABILITY
+-------------------------------------------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, REVENUE, OR PROFITS; NETWORK INTERRUPTIONS; OR REGULATORY
+PENALTIES) ARISING IN ANY WAY OUT OF THE USE OF, OR INABILITY TO USE,
+THIS APPLICATION, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+6. INTELLECTUAL PROPERTY AND OPEN-SOURCE LICENSES
+-------------------------------------------------------------
+- Socksicle is open-source software distributed under the terms of the MIT License.
+- Third-party components, including sing-box-lx (GPLv3) and AndroidX libraries
+  (Apache 2.0), remain the property of their respective authors and are governed
+  by their respective licenses as detailed in THIRD_PARTY_LICENSES_EN.txt.
+
+
+7. MODIFICATIONS TO TERMS
+-------------------------------------------------------------
+We reserve the right to revise or update these Terms at any time without prior
+notice. Continued use of the Application following any updates constitutes
+your acceptance of the modified Terms.
+
+
+8. CONTACT INFORMATION
+-------------------------------------------------------------
+For inquiries regarding these Terms of Service, contact the project maintainers:
+- GitHub: https://github.com/socksicle/Socksicle
+- Telegram: https://t.me/iwtsyddd

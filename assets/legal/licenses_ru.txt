@@ -1,0 +1,78 @@
+SOCKSICLE - ЛИЦЕНЗИИ И УВЕДОМЛЕНИЯ СТОРОННЕГО ПО
+=============================================================
+
+Настоящее приложение использует библиотеки и компоненты с открытым
+исходным кодом (Open Source). В данном документе приведены сведения
+об авторских правах, используемых компонентах и применимых лицензиях.
+
+
+1. sing-box-lx
+-------------------------------------------------------------
+Компонент: sing-box-lx core library (libbox.aar)
+Репозиторий: https://github.com/Leadaxe/sing-box-lx
+Базовый проект: https://github.com/SagerNet/sing-box
+Авторские права:
+Copyright (C) 2022-2024 SagerNet
+Copyright (C) Leadaxe и участники разработки
+Лицензия: GNU General Public License v3.0 (GPL-3.0)
+
+sing-box-lx является свободным программным обеспечением. Вы можете
+распространять и/или изменять его в соответствии с условиями лицензии
+GNU General Public License v3.0, опубликованной Free Software Foundation.
+
+Исходный код sing-box-lx доступен по адресу:
+https://github.com/Leadaxe/sing-box-lx
+
+
+2. Библиотеки AndroidX
+-------------------------------------------------------------
+Компоненты:
+- androidx.core:core-ktx:1.15.0
+- androidx.appcompat:appcompat:1.7.0
+- androidx.constraintlayout:constraintlayout:2.2.1
+- androidx.recyclerview:recyclerview:1.4.0
+- androidx.work:work-runtime-ktx:2.10.1
+Авторские права: Copyright (C) The Android Open Source Project
+Лицензия: Apache License, Version 2.0
+Сайт проекта: https://developer.android.com/jetpack/androidx
+
+
+3. Material Components for Android
+-------------------------------------------------------------
+Компонент: com.google.android.material:material:1.12.0
+Авторские права: Copyright (C) Google LLC
+Лицензия: Apache License, Version 2.0
+Репозиторий: https://github.com/material-components/material-components-android
+
+
+4. Стандартная библиотека Kotlin
+-------------------------------------------------------------
+Компонент: org.jetbrains.kotlin:kotlin-stdlib
+Авторские права: Copyright (C) 2010-2024 JetBrains s.r.o. и участники языка Kotlin
+Лицензия: Apache License, Version 2.0
+Репозиторий: https://github.com/JetBrains/kotlin
+
+
+=============================================================
+КРАТКОЕ ОПИСАНИЕ УСЛОВИЙ ЛИЦЕНЗИЙ
+=============================================================
+
+1. Лицензия Apache 2.0 (Apache License, Version 2.0)
+Разрешает свободное использование, модификацию и распространение
+кода как в открытых, так и в проприетарных проектах при обязательном
+сохранении уведомлений об авторских правах и текста лицензии.
+Предоставляется по принципу "КАК ЕСТЬ" ("AS IS"), без гарантий любого рода.
+Официальный текст лицензии доступен по адресу:
+http://www.apache.org/licenses/LICENSE-2.0
+
+2. Лицензия GNU General Public License v3.0 (GPL-3.0)
+Является строгой копилефт-лицензией. Разрешает использование,
+модификацию и распространение при условии, что любые производные
+работы или программы, включающие данный код, распространяются
+на тех же условиях с предоставлением полного исходного кода.
+Официальный текст лицензии доступен по адресу:
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Примечание: Юридически обязывающими являются оригинальные тексты
+лицензий на английском языке, приведенные в файле THIRD_PARTY_LICENSES_EN.txt
+и официальных репозиториях проектов.
