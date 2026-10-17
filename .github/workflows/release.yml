@@ -56,7 +56,6 @@ jobs:
           Expand-Archive -Path singbox.zip -DestinationPath temp_sb
           $sbExe = (Get-ChildItem -Path temp_sb -Filter "sing-box.exe" -Recurse).FullName
           Copy-Item $sbExe "bin/singbox/sing-box.exe" -Force
-          Copy-Item $sbExe "bin/sing-box.exe" -Force
           
           # Fetch wintun.dll (for TUN mode on Windows)
           $wintunUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
@@ -64,7 +63,6 @@ jobs:
           Invoke-WebRequest -Uri $wintunUrl -OutFile wintun.zip
           Expand-Archive -Path wintun.zip -DestinationPath temp_wintun
           Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/singbox/wintun.dll" -Force
-          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/wintun.dll" -Force
 
       - name: Compile with Nuitka (Native C++)
         shell: pwsh
@@ -91,9 +89,8 @@ jobs:
             Move-Item -Path "dist/main.dist" -Destination "dist/Socksicle.dist" -Force
           }
 
-          # Copy bin directory and wintun driver into standalone distribution
+          # Copy bin directory into standalone distribution
           Copy-Item -Path "bin" -Destination "dist/Socksicle.dist/bin" -Recurse -Force
-          Copy-Item -Path "bin/wintun.dll" -Destination "dist/Socksicle.dist/wintun.dll" -Force
 
       - name: Resolve Version
         id: get_version
@@ -195,8 +192,7 @@ jobs:
           sbUrl="https://github.com/SagerNet/sing-box/releases/download/v${sbVersion}/sing-box-${sbVersion}-linux-amd64.tar.gz"
           echo "Downloading sing-box from $sbUrl..."
           curl -sSL "$sbUrl" | tar -xz -C bin/singbox --strip-components=1
-          cp bin/singbox/sing-box bin/sing-box
-          chmod +x bin/singbox/sing-box bin/sing-box
+          chmod +x bin/singbox/sing-box
 
       - name: Resolve Version
         run: |
@@ -242,7 +238,6 @@ jobs:
           cp -r dist/Socksicle.dist/* AppDir/usr/bin/
           cp -r bin AppDir/usr/bin/
           chmod +x AppDir/usr/bin/socksicle
-          chmod +x AppDir/usr/bin/bin/sing-box 2>/dev/null || true
           chmod +x AppDir/usr/bin/bin/singbox/sing-box 2>/dev/null || true
 
           # Create AppRun entrypoint
