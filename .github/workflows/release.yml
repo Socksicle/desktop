@@ -64,6 +64,10 @@ jobs:
           Expand-Archive -Path wintun.zip -DestinationPath temp_wintun
           Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/singbox/wintun.dll" -Force
 
+          # Clean up temporary archives so they don't get picked up by release upload
+          Remove-Item singbox.zip, wintun.zip -Force -ErrorAction SilentlyContinue
+          Remove-Item temp_sb, temp_wintun -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Compile with Nuitka (Native C++)
         shell: pwsh
         run: |
@@ -136,7 +140,7 @@ jobs:
           name: socksicle-windows-artifacts
           path: |
             dist-installer/*.exe
-            *.zip
+            Socksicle-*-Windows-Portable-x64.zip
 
       - name: Publish Windows Artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -144,7 +148,7 @@ jobs:
         with:
           files: |
             dist-installer/*.exe
-            *.zip
+            Socksicle-*-Windows-Portable-x64.zip
 
   build-linux:
     name: Build Linux (AppImage)
