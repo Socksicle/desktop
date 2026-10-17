@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -33,7 +33,7 @@ jobs:
           pip install nuitka zstandard
 
       - name: Cache Nuitka
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~\AppData\Local\Nuitka\Nuitka\Cache
@@ -135,7 +135,7 @@ jobs:
             packaging/windows/installer.iss
 
       - name: Upload Artifacts to GitHub Action Run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: socksicle-windows-artifacts
           path: |
@@ -144,7 +144,7 @@ jobs:
 
       - name: Publish Windows Artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist-installer/*.exe
@@ -156,10 +156,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -179,7 +179,7 @@ jobs:
           pip install nuitka zstandard
 
       - name: Cache Nuitka
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/Nuitka
@@ -278,13 +278,13 @@ jobs:
           rm -rf squashfs-root
 
       - name: Upload Artifacts to GitHub Action Run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: socksicle-linux-artifacts
           path: "Socksicle-*.AppImage"
 
       - name: Publish Linux Artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: "Socksicle-*.AppImage"
