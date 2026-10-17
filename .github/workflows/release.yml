@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '[0-9]+.*'
   workflow_dispatch:
 
 permissions:
@@ -79,6 +80,8 @@ jobs:
           $ver = ""
           if ($env:GITHUB_REF -like "refs/tags/v*") {
             $ver = $env:GITHUB_REF_NAME.TrimStart('v')
+          } elseif ($env:GITHUB_REF -like "refs/tags/*") {
+            $ver = $env:GITHUB_REF_NAME
           } else {
             $match = Select-String -Path "pyproject.toml" -Pattern 'version\s*=\s*"([^"]+)"'
             if ($match) {
@@ -157,6 +160,8 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
             VER="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            VER="${GITHUB_REF_NAME}"
           else
             VER=$(grep -m1 'version = ' pyproject.toml | cut -d '"' -f 2)
             [ -z "$VER" ] && VER="0.1-rc.1"
