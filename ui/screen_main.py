@@ -42,8 +42,8 @@ class ScreenMain(QWidget):
         self.set_status(tr("status.disconnected"), False)
 
     def _setup_ui(self):
-        self._show_active_card = True
-        self._show_ip_card = True
+        self._show_active_card = False
+        self._show_ip_card = False
         self._telemetry_connected = False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -95,6 +95,8 @@ class ScreenMain(QWidget):
         self._active_spacer = QSpacerItem(1, 18, QSizePolicy.Minimum, QSizePolicy.Fixed)
         hero.addItem(self._active_spacer)
         hero.addWidget(self.card_active)
+        self.card_active.hide()
+        self._active_spacer.changeSize(1, 0, QSizePolicy.Minimum, QSizePolicy.Fixed)
 
         self.card_telemetry = BentoTelemetryCard(theme=self.theme)
         self._telemetry_spacer = QSpacerItem(1, 10, QSizePolicy.Minimum, QSizePolicy.Fixed)
@@ -171,7 +173,7 @@ class ScreenMain(QWidget):
         if not visible and stop:
             self.card_telemetry.stop_session()
 
-    def set_cards_visibility(self, show_active: bool = True, show_ip: bool = True):
+    def set_cards_visibility(self, show_active: bool = False, show_ip: bool = False):
         """Apply Settings toggles for the main-screen cards visibility."""
         self._show_active_card = bool(show_active)
         self._show_ip_card = bool(show_ip)

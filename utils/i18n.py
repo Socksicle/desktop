@@ -1,15 +1,15 @@
-"""Two-language UI strings (Russian/English).
+"""UI strings for Russian, English, and Chinese.
 
-Language is stored as settings["language"] ("ru" or "en", default "ru")
+Language is stored as settings["language"] ("ru", "en" or "zh", default "ru")
 and applied at startup before widgets are built; changing it in Settings
 takes effect after restart, like the render backend.
 """
-from . import i18n_en, i18n_ru
+from . import i18n_en, i18n_ru, i18n_zh
 
-SUPPORTED_LANGUAGES = ("ru", "en")
+SUPPORTED_LANGUAGES = ("ru", "en", "zh")
 DEFAULT_LANGUAGE = "ru"
 
-_catalogs = {"ru": i18n_ru.STRINGS, "en": i18n_en.STRINGS}
+_catalogs = {"ru": i18n_ru.STRINGS, "en": i18n_en.STRINGS, "zh": i18n_zh.STRINGS}
 _current = DEFAULT_LANGUAGE
 
 
@@ -25,16 +25,25 @@ def get_language() -> str:
     return _current
 
 
+def _lookup(key: str):
+    """Raw catalog value: active language first, then fallbacks (zh → en → ru)."""
+    langs = [_current]
+    if _current == "zh":
+        # Untranslated strings are better shown in English than in Russian.
+        langs.append("en")
+    if _current != DEFAULT_LANGUAGE:
+        langs.append(DEFAULT_LANGUAGE)
+    for lang in langs:
+        value = _catalogs.get(lang, {}).get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def tr(key: str) -> str:
-    """Translated string for the active language (Russian fallback, then the key)."""
-    table = _catalogs.get(_current, {})
-    hit = table.get(key)
-    if isinstance(hit, str):
-        return hit
-    fallback = _catalogs[DEFAULT_LANGUAGE].get(key)
-    if isinstance(fallback, str):
-        return fallback
-    return key
+    """Translated string for the active language (zh falls back to English, then Russian)."""
+    value = _lookup(key)
+    return value if isinstance(value, str) else key
 
 
 def _pick_form(n: int) -> str:
@@ -50,9 +59,7 @@ def _pick_form(n: int) -> str:
 
 def trn(key: str, n: int) -> str:
     """Plural template for count ``n`` (catalog value is a form table)."""
-    table = _catalogs.get(_current, {}).get(key)
-    if not isinstance(table, dict):
-        table = _catalogs[DEFAULT_LANGUAGE].get(key, {})
+    table = _lookup(key)
     if not isinstance(table, dict):
         return key
     form = _pick_form(n)

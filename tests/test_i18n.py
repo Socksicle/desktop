@@ -1,10 +1,12 @@
-"""Tests for two-language UI support (utils.i18n + catalogs)."""
+"""Tests for trilingual UI support (utils.i18n + catalogs)."""
 import pathlib
 import re
+import string
 
 import pytest
 
 from utils import i18n
+from utils import i18n_en, i18n_ru, i18n_zh
 from utils.i18n import get_language, set_language, tr, trn
 
 
@@ -29,6 +31,9 @@ def test_tr_fallback_chain():
     assert tr("missing.key") == "missing.key"
     set_language("en")
     assert tr("nav.settings") == "Settings"
+    set_language("zh")
+    assert tr("nav.settings") == "设置"
+    assert tr("missing.key") == "missing.key"
 
 
 def test_trn_plural_forms():
@@ -42,6 +47,17 @@ def test_trn_plural_forms():
     set_language("en")
     assert trn("tray.nodes_added", 1).format(n=1) == "Added 1 new node."
     assert trn("tray.nodes_added", 2).format(n=2) == "Added 2 new nodes."
+    set_language("zh")
+    assert trn("tray.nodes_added", 1).format(n=1) == "已添加 1 个新节点。"
+    assert trn("tray.nodes_added", 5).format(n=5) == "已添加 5 个新节点。"
+
+
+def test_tr_zh_falls_back_to_english(monkeypatch):
+    set_language("zh")
+    monkeypatch.delitem(i18n_zh.STRINGS, "nav.settings")
+    assert tr("nav.settings") == "Settings"
+    monkeypatch.delitem(i18n_en.STRINGS, "nav.settings")
+    assert tr("nav.settings") == "Настройки"
 
 
 def _used_tr_keys():
@@ -56,12 +72,30 @@ def _used_tr_keys():
     return keys
 
 
+def _placeholders(text: str) -> list[str]:
+    return sorted(f for _, f, _, _ in string.Formatter().parse(text) if f)
+
+
 def test_catalogs_cover_every_used_key():
-    from utils import i18n_en, i18n_ru
     used = _used_tr_keys()
     assert used, "no tr() calls found"
     assert not [k for k in used if k not in i18n_ru.STRINGS]
     assert not [k for k in used if k not in i18n_en.STRINGS]
+    assert not [k for k in used if k not in i18n_zh.STRINGS]
+
+
+def test_zh_catalog_matches_english_keys_and_placeholders():
+    assert set(i18n_zh.STRINGS) == set(i18n_en.STRINGS)
+    assert set(i18n_zh.STRINGS) == set(i18n_ru.STRINGS)
+    for key, value in i18n_en.STRINGS.items():
+        other = i18n_zh.STRINGS[key]
+        if isinstance(value, dict):
+            assert set(other) == set(value), key
+            for form, text in value.items():
+                assert _placeholders(text) == _placeholders(other[form]), key
+        else:
+            assert isinstance(other, str), key
+            assert _placeholders(value) == _placeholders(other), key
 
 
 def test_settings_screen_renders_english(qapp):
@@ -78,7 +112,7 @@ def test_settings_screen_renders_english(qapp):
     assert "THP (recommended)" in titles
     screen.open_section("appearance", "Appearance")
     langs = [screen.lang_combo.itemText(i) for i in range(screen.lang_combo.count())]
-    assert langs == ["Русский", "English"]
+    assert langs == ["Русский", "English", "中文"]
     assert screen.lbl_lang_hint.text() == "Applies after app restart"
 
 
@@ -145,7 +179,7 @@ def test_dialogs_render_english(qapp):
 
     sub = {"name": "Sub", "url": "https://example.com/sub", "icon_emoji": "🌐"}
     edit = EditSubscriptionDialog(sub, None, theme)
-    assert edit.btn_pin.text() == "📌 Pin to top"
+    assert edit.btn_pin.text() == "Pin to top"
     assert edit.edit_name.placeholderText() == "Subscription name"
 
     log_dlg = ConnectionLogDialog(theme=theme)

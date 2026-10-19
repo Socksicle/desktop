@@ -8,6 +8,8 @@ time), except USER_AGENT_OPTIONS whose labels are sent verbatim as the
 HTTP User-Agent header and must never be translated.
 """
 
+from utils.platform_utils import get_socksicle_user_agent
+
 THEME_SWATCHES: list[tuple[str, str, str, bool]] = [
     ("dynamic", "opt.theme.dynamic", "#E2703C", True),
     ("lavender", "opt.theme.lavender", "#D0BCFF", False),
@@ -23,9 +25,10 @@ RENDER_OPTIONS: list[tuple[str, str]] = [
     ("opengl", "opt.render.opengl"),
 ]
 
-ENGINE_IDS = ("sing-box", "xray")
-ENGINE_FALLBACK = "sing-box"
+ENGINE_IDS = ("auto", "sing-box", "xray")
+ENGINE_FALLBACK = "auto"
 ENGINE_OPTIONS: list[tuple[str, str]] = [
+    ("auto", "opt.engine.auto"),
     ("sing-box", "opt.engine.singbox"),
     ("xray", "opt.engine.xray"),
 ]
@@ -48,8 +51,19 @@ DNS_PRESET_URLS: dict[str, str] = {
 }
 
 USER_AGENT_OPTIONS: list[tuple[str, str]] = [
-    ("socksicle", "Socksicle/1.0"),
-    ("v2rayng", "v2rayNG/1.8.5"),
+    ("socksicle", get_socksicle_user_agent()),
+    ("sing-box", "sing-box/1.14.3"),
+    ("mihomo", "Mihomo/1.19.32"),
+    ("clash_verge", "ClashVerge/2.5.8"),
+    ("hiddify", "Hiddify/4.1.1"),
+    ("v2rayn", "v2rayN/7.25.6"),
+    ("flclash", "FlClash/0.9.1"),
+    ("karing", "karing/1.2.26"),
+    ("nekobox", "NekoBox/4.0.1"),
+    ("nekoray", "NekoRay/4.0.1"),
+    ("mihomo_party", "MihomoParty/1.5.0"),
+    ("v2rayng", "v2rayNG/2.3.11"),
+    ("happ", "Happ/4.6.0"),
     ("clash", "Clash.Meta"),
     ("shadowrocket", "Shadowrocket/2.2.0"),
 ]
@@ -74,4 +88,5 @@ PING_TIMEOUT_MAX = 10
 LANGUAGE_OPTIONS: list[tuple[str, str]] = [
     ("ru", "Русский"),
     ("en", "English"),
+    ("zh", "中文"),
 ]

@@ -30,10 +30,11 @@ from utils.server_manager import ServerManager
 from utils.server_model import server_identity
 from utils.subscription_manager import SubscriptionManager
 from utils.subscription_store import get_last_fetch_error
-from utils.ping import DEFAULT_PING_METHOD
+from utils.ping import DEFAULT_PING_METHOD, DEFAULT_PING_TIMEOUT
 from utils.theme import M3Theme
 from utils.platform_utils import get_app_dir
-from utils.engines.engine_manager import get_engine, EngineType
+from utils.window_utils import start_window_move
+from utils.engines.engine_manager import get_engine, get_current_engine, EngineType
 from utils.startup_utils import show_backend_missing, show_singbox_outdated
 from .theme_transition import (
     ThemeColorTransition,
@@ -142,12 +143,14 @@ class RoundedWindow(QWidget):
         )
         self.screen_main.connectClicked.connect(self.on_vpn_switch_clicked)
         self.screen_main.filterChanged.connect(self._on_filter_changed)
+        self.header_bar.tunToggled.connect(self._on_tun_toggled)
+        self.header_bar.set_tun_mode(self.settings.get("tun_mode", False), animate=False)
         self.screen_main.card_active.clicked.connect(self._on_card_active_clicked)
         self.screen_main.set_cards_visibility(
-            self.settings.get("show_active_server_card", True),
-            self.settings.get("show_ip_card", True),
+            self.settings.get("show_active_server_card", False),
+            self.settings.get("show_ip_card", False),
         )
-        self.screen_main.set_show_flags(self.settings.get("show_flags", True))
+        self.screen_main.set_show_flags(self.settings.get("show_flags", False))
 
         self.server_panel = self.screen_main.server_panel
         self.server_panel.serverSelected.connect(self._on_server_selected)
@@ -238,6 +241,7 @@ class RoundedWindow(QWidget):
 
     def _on_taskbar_tab_changed(self, idx: int):
         self.screen_stack.setCurrentIndex(idx)
+        self.header_bar.tun_bar.setVisible(idx == 0)
         if idx == 0:
             self.header_bar.set_title("Socksicle")
         elif idx == 1:
@@ -306,22 +310,34 @@ class RoundedWindow(QWidget):
             self.screen_main.set_ping_display_mode(int(val))
         elif key in ("show_active_server_card", "show_ip_card"):
             self.screen_main.set_cards_visibility(
-                self.settings.get("show_active_server_card", True),
-                self.settings.get("show_ip_card", True),
+                self.settings.get("show_active_server_card", False),
+                self.settings.get("show_ip_card", False),
             )
         elif key == "show_flags":
             self.screen_main.set_show_flags(bool(val))
         elif key == "engine":
             if not self.settings.get("tun_mode", False):
-                engine = get_engine(EngineType(val))
-                self.connection_manager.switch_engine(engine)
+                self.connection_manager.switch_engine(get_current_engine(self.settings))
         elif key == "tun_mode":
-            if val:
-                engine = get_engine(EngineType.SINGBOX)
-            else:
-                engine = get_engine(EngineType(self.settings.get("engine", "sing-box")))
-            self.connection_manager.switch_engine(engine)
+            self._apply_tun_mode(val)
+            self.header_bar.set_tun_mode(val, animate=True)
 
+        self.connection_manager.apply_settings(self.settings)
+
+    def _apply_tun_mode(self, val):
+        if val:
+            engine = get_engine(EngineType.SINGBOX)
+        else:
+            # "auto" and unknown values normalize to sing-box here
+            # (EngineType(val) would raise for "auto").
+            engine = get_current_engine(self.settings)
+        self.connection_manager.switch_engine(engine)
+
+    def _on_tun_toggled(self, on: bool):
+        self.settings["tun_mode"] = bool(on)
+        self.server_manager.save_settings()
+        self.screen_settings.set_tun_mode(bool(on))
+        self._apply_tun_mode(bool(on))
         self.connection_manager.apply_settings(self.settings)
 
     def on_vpn_switch_clicked(self):
@@ -356,7 +372,7 @@ class RoundedWindow(QWidget):
                 f"{info.get('city', '')}, {info.get('country', '')}".strip(" ,"),
                 info.get("flag", "🌐")
             )
-            flag = info.get("flag", "🌐") if self.settings.get("show_flags", True) else ""
+            flag = info.get("flag", "🌐") if self.settings.get("show_flags", False) else ""
             if flag:
                 title = tr("tray.connected_flag").format(flag=flag, ip=info['ip'])
             else:
@@ -452,7 +468,7 @@ class RoundedWindow(QWidget):
             if tun_mode or kill_switch:
                 from utils.platform_utils import (
                     is_admin, elevate_restart, is_windows, is_linux,
-                    check_tun_capabilities, grant_tun_capabilities
+                    grant_tun_capabilities
                 )
                 if is_windows() and tun_mode and kill_switch:
                     MessageBox.warning(
@@ -472,16 +488,16 @@ class RoundedWindow(QWidget):
                         self, tr("dlg.admin_title"), tr("dlg.admin_ks_linux_text"))
                     return
                 if tun_mode and is_linux():
+                    # grant_tun_capabilities is a silent no-op when privileges
+                    # are already in place; prompts once through Polkit otherwise.
                     engine = self.connection_manager.engine
                     binary = engine.find_binary()
-                    if binary and not check_tun_capabilities(binary):
-                        granted = grant_tun_capabilities(binary, parent_window=self)
-                        if not granted or not check_tun_capabilities(binary):
-                            MessageBox.warning(
-                                self, tr("dlg.tun_title"),
-                                tr("dlg.tun_text").format(binary=binary)
-                            )
-                            return
+                    if binary and not grant_tun_capabilities(binary, parent_window=self):
+                        MessageBox.warning(
+                            self, tr("dlg.tun_title"),
+                            tr("dlg.tun_text").format(binary=binary)
+                        )
+                        return
             idx = self.server_panel.get_selected_index()
             servers = self._current_servers()
             if idx < 0 and self._selected_server_key is not None:
@@ -638,9 +654,12 @@ class RoundedWindow(QWidget):
         self._pinging_keys.add(key)
         self._set_card_pinging(key, True)
         method = self.settings.get("ping_method", DEFAULT_PING_METHOD)
+        timeout = float(self.settings.get("ping_timeout", DEFAULT_PING_TIMEOUT))
+        url = self.settings.get("ping_url") or None
         self.server_panel.ping_all(
             method, self.connection_manager.local_port,
-            servers=servers, group_key=key)
+            servers=servers, group_key=key,
+            timeout=timeout, url=url)
 
     @Slot(str)
     def _on_group_ping_finished(self, key: str):
@@ -860,6 +879,8 @@ class RoundedWindow(QWidget):
         self.screen_settings.apply_theme(self.theme)
         self.screen_about.apply_theme(self.theme)
         self.taskbar.apply_theme(self.theme)
+        if hasattr(self, "tray_manager") and self.tray_manager:
+            self.tray_manager.apply_theme(self.theme)
         if hasattr(self, "bottom_fade") and self.bottom_fade:
             self.bottom_fade.theme = self.theme
             self.bottom_fade.update()
@@ -895,6 +916,8 @@ class RoundedWindow(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and e.position().y() < 60:
+            if start_window_move(self):
+                return
             self._dragging = True
             self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 

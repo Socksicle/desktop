@@ -30,6 +30,7 @@ from utils.ping import (
     async_tcp_connect_ping_via_socks5,
     async_ping_server_job, async_ping_all,
     _configure_tcp_socket, _configure_udp_socket,
+    parse_ping_url, DEFAULT_PING_TIMEOUT,
 )
 
 CONNECT_OK = b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50"
@@ -714,3 +715,76 @@ def test_async_direct_http_ping_mid_request_failure_returns_none():
             return await async_direct_http_ping("127.0.0.1", 80, timeout=0.5)
 
     assert asyncio.run(_run()) is None
+
+
+def test_parse_ping_url_variants():
+    # Defaults on empty / None / invalid
+    assert parse_ping_url(None) == ("connectivitycheck.gstatic.com", "/generate_204", 80, False)
+    assert parse_ping_url("") == ("connectivitycheck.gstatic.com", "/generate_204", 80, False)
+    assert parse_ping_url("   ") == ("connectivitycheck.gstatic.com", "/generate_204", 80, False)
+
+    # HTTP URL with path
+    host, path, port, is_ssl = parse_ping_url("http://cp.cloudflare.com/generate_204")
+    assert host == "cp.cloudflare.com"
+    assert path == "/generate_204"
+    assert port == 80
+    assert is_ssl is False
+
+    # HTTPS URL with path
+    host, path, port, is_ssl = parse_ping_url("https://connectivitycheck.gstatic.com/generate_204")
+    assert host == "connectivitycheck.gstatic.com"
+    assert path == "/generate_204"
+    assert port == 443
+    assert is_ssl is True
+
+    # Custom port and query
+    host, path, port, is_ssl = parse_ping_url("https://my-server.net:8443/ping?token=123")
+    assert host == "my-server.net"
+    assert path == "/ping?token=123"
+    assert port == 8443
+    assert is_ssl is True
+
+    # Bare domain without scheme
+    host, path, port, is_ssl = parse_ping_url("example.com/check")
+    assert host == "example.com"
+    assert path == "/check"
+    assert port == 80
+    assert is_ssl is False
+
+
+def test_proxy_ping_job_honors_timeout_and_url(monkeypatch):
+    calls = []
+    def fake_ping_via_socks5(host, port, method="http_get", timeout=None, url=None):
+        calls.append({"host": host, "port": port, "method": method, "timeout": timeout, "url": url})
+        return 42.0
+
+    monkeypatch.setattr("utils.ping.ping_via_socks5", fake_ping_via_socks5)
+    results = []
+    job = ProxyPingJob("custom.host", 1080, results.append, method="http_head", timeout=5.0, url="http://custom.host/check")
+    job.run()
+
+    assert results == [42.0]
+    assert len(calls) == 1
+    assert calls[0]["host"] == "custom.host"
+    assert calls[0]["port"] == 1080
+    assert calls[0]["method"] == "http_head"
+    assert calls[0]["timeout"] == 5.0
+    assert calls[0]["url"] == "http://custom.host/check"
+
+
+def test_async_batch_ping_job_honors_timeout_and_url(monkeypatch):
+    calls = []
+    async def fake_async_ping_all(servers, callback=None, method=None, socks5_port=None, concurrency=20, timeout=None, url=None):
+        calls.append({"servers": servers, "method": method, "timeout": timeout, "url": url})
+        if callback:
+            callback(0, 30.0)
+        return {0: 30.0}
+
+    monkeypatch.setattr("utils.ping.async_ping_all", fake_async_ping_all)
+    results = []
+    job = AsyncBatchPingJob(["127.0.0.1"], results.append, method="http_head", timeout=7.0, url="http://check.me/204")
+    job.run()
+
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 7.0
+    assert calls[0]["url"] == "http://check.me/204"

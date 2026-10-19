@@ -362,6 +362,51 @@ def test_public_ip_literal_allowed(monkeypatch):
     assert links == ["vless://u@h:443#N"]
 
 
+def _subscription_resp(body: str):
+    encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
+
+    class Resp:
+        headers = {}
+
+        def __init__(self):
+            self._body = encoded.encode("ascii")
+
+        def read(self, size=-1):
+            if size is None or size < 0:
+                data, self._body = self._body, b""
+                return data
+            data, self._body = self._body[:size], self._body[size:]
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    return Resp()
+
+
+def test_parse_subscription_accepts_trojan_and_tuic_nodes(monkeypatch):
+    body = "\n".join([
+        "trojan://pass@trojan.example.com:443?sni=trojan.example.com#TrojanNode",
+        "trojan-go://pass@1.2.3.4:8443?type=ws&path=/ws&sni=sni.com#TrojanGoNode",
+        "tuic://uuid:pass@tuic.example.com:8443?sni=tuic.example.com#TuicNode",
+    ])
+    monkeypatch.setattr("utils.subscription_store._open_subscription_request",
+                        lambda req, timeout=10: _subscription_resp(body))
+    links, _meta = sm.parse_subscription("https://example.com/sub")
+    assert links == body.split("\n")
+    assert any(link.startswith("trojan-go://") for link in links)
+
+
+def test_subscription_description_stops_at_trojan_node_line():
+    from utils.subscription_store import _extract_description
+
+    result = _extract_description({}, ["Welcome aboard", "trojan://pass@trojan.example.com:443#N"], "", {})
+    assert result == "Welcome aboard"
+
+
 def test_dns_resolution_failure_fails_closed(monkeypatch):
     import utils.subscription_fetch as sf
     import urllib.error

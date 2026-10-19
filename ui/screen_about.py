@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont, QPainter, QPixmap, QColor, QPainterPath, QGuiAp
 
 from utils.icons import icon as _theme_icon
 from utils.i18n import tr
-from utils.platform_utils import get_app_dir
+from utils.platform_utils import get_app_dir, get_real_app_version, get_socksicle_user_agent
 from utils.subscription_store import get_installation_id
 from utils.twinsock import VERSION as TWSCORE_VERSION
 from .blob_avatar_view import BlobAvatarView
@@ -29,29 +29,6 @@ from .m3_scroll_area import M3ScrollArea
 
 
 log = logging.getLogger("about")
-
-
-@functools.lru_cache(maxsize=1)
-def get_real_app_version() -> str:
-    """Retrieve actual application version from pyproject.toml or package metadata."""
-    base_ver = "0.1-rc.1"
-    try:
-        toml_path = get_app_dir() / "pyproject.toml"
-        if toml_path.is_file():
-            content = toml_path.read_text(encoding="utf-8")
-            m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
-            if m:
-                return m.group(1)
-    except (OSError, ValueError, UnicodeDecodeError) as e:
-        log.debug("App version from pyproject.toml unavailable: %s", e)
-
-    try:
-        from importlib.metadata import version
-        return version('socksicle')
-    except (ImportError, AttributeError, ValueError, Exception) as e:
-        log.debug("App version from package metadata unavailable: %s", e)
-
-    return base_ver
 
 
 def get_real_device_name() -> str:
@@ -170,15 +147,18 @@ def get_real_os_version() -> str:
             log.debug("Windows OS version probe failed: %s", e)
 
     elif sys.platform.startswith("linux"):
+        # "6.16.5-2-cachyos" -> "6.16.5"; the suffix is distro flavour noise
+        kernel_short = platform.release().split("-", 1)[0]
         try:
             os_release = Path("/etc/os-release")
             if os_release.is_file():
                 for line in os_release.read_text(encoding="utf-8").splitlines():
                     if line.startswith("PRETTY_NAME="):
-                        return line.split("=", 1)[1].strip('"\'')
+                        pretty = line.split("=", 1)[1].strip('"\'')
+                        return f"{pretty} (linux {kernel_short})"
         except (OSError, ValueError, UnicodeDecodeError) as e:
             log.debug("Linux OS version probe failed: %s", e)
-        return f"Linux {platform.release()}"
+        return f"Linux {kernel_short}"
 
     return f"{platform.system()} {platform.release()}"
 

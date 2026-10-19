@@ -127,5 +127,52 @@ class SwitchEngineTest(unittest.TestCase):
         self.assertEqual(new_engine.engine_type, EngineType.SINGBOX)
 
 
+class ResolveEngineForServerTest(unittest.TestCase):
+    """Test resolve_engine_for_server logic."""
+
+    def test_exclusive_singbox_protocols_always_route_to_singbox(self):
+        from utils.server_model import Server, ProxyProtocol
+        for proto in (ProxyProtocol.HYSTERIA2, ProxyProtocol.TUIC, ProxyProtocol.TROJAN):
+            srv = Server(protocol=proto)
+            # Even if settings explicitly asked for xray or auto
+            self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "auto"}), EngineType.SINGBOX)
+            self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "xray"}), EngineType.SINGBOX)
+
+    def test_exclusive_xray_transports_route_to_xray(self):
+        from utils.server_model import Server, ProxyProtocol
+        for tr in ("xhttp", "splithttp", "kcp"):
+            srv = Server(protocol=ProxyProtocol.VLESS, transport=tr)
+            self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "auto"}), EngineType.XRAY)
+            self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "sing-box"}), EngineType.XRAY)
+
+    def test_tun_mode_prefers_singbox(self):
+        from utils.server_model import Server, ProxyProtocol
+        srv = Server(protocol=ProxyProtocol.VLESS, transport="tcp")
+        self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "auto", "tun_mode": True}), EngineType.SINGBOX)
+
+    def test_tun_mode_overrides_explicit_engine_preference(self):
+        # Only sing-box implements TUN (Wintun/sing-tun); xray would start
+        # silently in proxy mode instead of the selected TUN routing.
+        from utils.server_model import Server, ProxyProtocol
+        srv = Server(protocol=ProxyProtocol.VLESS, transport="tcp")
+        self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "xray", "tun_mode": True}), EngineType.SINGBOX)
+        self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "sing-box", "tun_mode": True}), EngineType.SINGBOX)
+
+    def test_explicit_selection_respected_for_compatible_server(self):
+        from utils.server_model import Server, ProxyProtocol
+        srv = Server(protocol=ProxyProtocol.VLESS, transport="tcp")
+        self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "xray"}), EngineType.XRAY)
+        self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "sing-box"}), EngineType.SINGBOX)
+
+    def test_auto_fallback_to_xray_when_singbox_unusable(self):
+        from utils.server_model import Server, ProxyProtocol
+        srv = Server(protocol=ProxyProtocol.VLESS, transport="tcp")
+        with mock.patch.object(SingBoxEngine, "find_binary", return_value=None), \
+             mock.patch.object(XrayEngine, "find_binary", return_value=Path("C:/fake/xray")), \
+             mock.patch.object(XrayEngine, "check_usable", return_value=CheckResult(True, "")):
+            self.assertEqual(em.resolve_engine_for_server(srv, {"engine": "auto"}), EngineType.XRAY)
+
+
 if __name__ == "__main__":
     unittest.main()
+

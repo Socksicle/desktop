@@ -165,6 +165,7 @@ class SingBoxVlessConfigTest(unittest.TestCase):
         )
         config = _generate_config(server, 1080)
         self.assertIn("log", config)
+        self.assertEqual(config["log"]["level"], "warn")
         self.assertIn("inbounds", config)
         self.assertIn("outbounds", config)
         self.assertIn("route", config)
@@ -174,6 +175,20 @@ class SingBoxVlessConfigTest(unittest.TestCase):
         self.assertEqual(ob["type"], "vless")
         self.assertEqual(ob["uuid"], "uuid-full")
         self.assertEqual(config["route"]["final"], "proxy")
+
+    def test_debug_log_level(self):
+        from utils.engines import singbox_config
+        singbox_config.set_debug_logs(True)
+        self.addCleanup(singbox_config.set_debug_logs, False)
+        server = _FakeServer(
+            protocol=ProxyProtocol.VLESS,
+            host="1.2.3.4", port=443,
+            uuid="uuid-dbg", flow="", security="tls",
+            transport="tcp", server_name="sni.com",
+            insecure=False,
+        )
+        config = _generate_config(server, 1080)
+        self.assertEqual(config["log"]["level"], "debug")
 
     def test_route_rules_no_geoip_cidr(self):
         server = _FakeServer(
@@ -715,25 +730,39 @@ class SingBoxTunConfigTest(unittest.TestCase):
         self.assertEqual(len(config["inbounds"]), 2)
         tun_in = config["inbounds"][0]
         self.assertEqual(tun_in["type"], "tun")
-        self.assertTrue(tun_in["interface_name"].startswith("socksicle-"))
         self.assertEqual(tun_in["address"], ["172.19.0.1/30"])
         self.assertEqual(tun_in["dns_mode"], "hijack")
         self.assertTrue(tun_in["auto_route"])
-        self.assertFalse(tun_in["strict_route"])
         self.assertNotIn("endpoint_independent_nat", tun_in)
         self.assertNotIn("route_address", tun_in)
         self.assertEqual(tun_in["route_exclude_address"], ["1.2.3.4/32"])
-        self.assertEqual(tun_in["stack"], "system")
         mixed_in = config["inbounds"][1]
         self.assertEqual(mixed_in["type"], "mixed")
         self.assertEqual(mixed_in["listen_port"], 1080)
         self.assertEqual(config["route"]["default_domain_resolver"], "remote-dns")
-        self.assertEqual(config["route"]["rules"][0]["action"], "sniff")
-        self.assertEqual(config["route"]["rules"][1]["protocol"], "dns")
-        self.assertEqual(config["route"]["rules"][1]["action"], "hijack-dns")
-        self.assertEqual(config["route"]["rules"][2]["port"], 123)
-        self.assertEqual(config["route"]["rules"][3]["ip_cidr"], ["1.2.3.4/32"])
-        self.assertEqual(config["route"]["rules"][4]["ip_is_private"], True)
+        if sys.platform.startswith("linux"):
+            # sdelay.txt: kernel bypass pre-match fires before sniffing.
+            rules = config["route"]["rules"]
+            self.assertEqual(tun_in["interface_name"], "sb_tun0")
+            self.assertTrue(tun_in["auto_redirect"])
+            self.assertTrue(tun_in["strict_route"])
+            self.assertEqual(tun_in["stack"], "mixed")
+            self.assertEqual(rules[0],
+                             {"ip_is_private": True, "action": "bypass"})
+            self.assertEqual(rules[1], {"action": "sniff"})
+            self.assertEqual(rules[2],
+                             {"inbound": ["tun-in"], "protocol": "dns",
+                              "action": "hijack-dns"})
+            rest = rules[3:]
+        else:
+            self.assertTrue(tun_in["interface_name"].startswith("socksicle-"))
+            self.assertFalse(tun_in["strict_route"])
+            self.assertEqual(tun_in["stack"], "system")
+            self.assertNotIn("auto_redirect", tun_in)
+            rest = config["route"]["rules"]
+        self.assertEqual(rest[0]["port"], 123)
+        self.assertEqual(rest[1]["ip_cidr"], ["1.2.3.4/32"])
+        self.assertEqual(rest[2]["ip_is_private"], True)
         self.assertEqual(config["outbounds"][0]["domain_resolver"], "local-dns")
         self.assertEqual(config["outbounds"][1]["domain_resolver"], "local-dns")
 
@@ -746,7 +775,10 @@ class SingBoxTunConfigTest(unittest.TestCase):
         )
         config = _generate_config(server, 1080, tun_mode=True)
         tun_in = config["inbounds"][0]
-        self.assertFalse(tun_in["strict_route"])
+        if sys.platform.startswith("linux"):
+            self.assertTrue(tun_in["strict_route"])
+        else:
+            self.assertFalse(tun_in["strict_route"])
         self.assertNotIn("route_address", tun_in)
         self.assertNotIn("route_exclude_address", tun_in)
         # Server domain is routed direct in route rules

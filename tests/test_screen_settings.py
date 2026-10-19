@@ -182,7 +182,7 @@ def test_engine_combo_lists_only_available_engines():
     screen = SettingsScreen(settings, theme)
     screen.open_section("connection", "Соединение")
     values = [screen.engine_combo.itemData(i) for i in range(screen.engine_combo.count())]
-    assert values == ["sing-box", "xray"]
+    assert values == ["auto", "sing-box", "xray"]
 
 
 def test_engine_combo_heals_unknown_engine_setting():
@@ -190,8 +190,8 @@ def test_engine_combo_heals_unknown_engine_setting():
     settings = {"theme_preset": "lavender", "engine": "unknown"}
     screen = SettingsScreen(settings, theme)
     screen.open_section("connection", "Соединение")
-    assert settings["engine"] == "sing-box"
-    assert screen.engine_combo.currentData() == "sing-box"
+    assert settings["engine"] == "auto"
+    assert screen.engine_combo.currentData() == "auto"
 
 
 def test_settings_sections_build_lazily():
@@ -311,6 +311,50 @@ def test_subs_section_holds_autoupdate_and_user_agent():
         screen.ua_combo.findData("v2rayng"))
     assert ("user_agent_key", "v2rayng") in emitted
     assert settings["user_agent_key"] == "v2rayng"
+
+
+def test_user_agent_options_match_presets():
+    from ui.settings_options import USER_AGENT_OPTIONS
+    from utils.subscription_store import USER_AGENT_PRESETS
+
+    expected_labels = {
+        "sing-box/1.14.3",
+        "Mihomo/1.19.32",
+        "ClashVerge/2.5.8",
+        "Hiddify/4.1.1",
+        "v2rayN/7.25.6",
+        "FlClash/0.9.1",
+        "karing/1.2.26",
+        "NekoBox/4.0.1",
+        "NekoRay/4.0.1",
+        "MihomoParty/1.5.0",
+        "v2rayNG/2.3.11",
+        "Happ/4.6.0",
+    }
+    options_dict = dict(USER_AGENT_OPTIONS)
+    labels = set(options_dict.values())
+    assert expected_labels.issubset(labels)
+
+    for key, label in USER_AGENT_OPTIONS:
+        assert key in USER_AGENT_PRESETS
+        assert USER_AGENT_PRESETS[key] == label
+
+    assert options_dict["socksicle"].startswith("socksicle/")
+    assert options_dict["socksicle"] == USER_AGENT_PRESETS["socksicle"]
+
+
+def test_socksicle_user_agent_platforms(monkeypatch):
+    from utils import platform_utils as pu
+
+    monkeypatch.setattr(pu, "get_real_app_version", lambda: "1.2.3")
+
+    monkeypatch.setattr(pu, "is_windows", lambda: True)
+    monkeypatch.setattr(pu, "is_linux", lambda: False)
+    assert pu.get_socksicle_user_agent() == "socksicle/1.2.3/windows"
+
+    monkeypatch.setattr(pu, "is_windows", lambda: False)
+    monkeypatch.setattr(pu, "is_linux", lambda: True)
+    assert pu.get_socksicle_user_agent() == "socksicle/1.2.3/linux"
 
 
 def test_system_section_holds_logs_without_subs_widgets():
@@ -554,7 +598,10 @@ def test_settings_hidden_appearance_items():
     assert hasattr(screen, "sw_show_flags")
     assert screen.sw_show_server_card.row_widget.isHidden() is True
     assert screen.sw_show_flags.row_widget.isHidden() is True
-    assert screen.sw_show_ip_card.row_widget.isHidden() is False
+    assert screen.sw_show_ip_card.row_widget.isHidden() is True
+    assert screen.sw_show_server_card.isChecked() is False
+    assert screen.sw_show_flags.isChecked() is False
+    assert screen.sw_show_ip_card.isChecked() is False
 
 
 

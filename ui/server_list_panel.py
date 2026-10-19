@@ -28,7 +28,7 @@ class ServerListPanel(QWidget):
     pingResultReceived = Signal(object, float)
     pingFinished = Signal(str)
 
-    def __init__(self, theme, parent=None, ping_display_mode: int = 0, show_flags: bool = True):
+    def __init__(self, theme, parent=None, ping_display_mode: int = 0, show_flags: bool = False):
         super().__init__(parent)
         self.theme = theme
         self._ping_display_mode = int(ping_display_mode)
@@ -62,18 +62,20 @@ class ServerListPanel(QWidget):
         self._empty_widget = QWidget(self)
         self._empty_widget.setObjectName("emptyServerList")
         empty_layout = QVBoxLayout(self._empty_widget)
-        empty_layout.setContentsMargins(20, 36, 20, 36)
-        empty_layout.setSpacing(8)
+        empty_layout.setContentsMargins(20, 6, 20, 36)
+        empty_layout.setSpacing(0)
         empty_layout.setAlignment(Qt.AlignCenter)
 
         self._empty_icon = QLabel(self._empty_widget)
         self._empty_icon.setAlignment(Qt.AlignCenter)
         self._empty_icon.setFixedSize(48, 48)
         empty_layout.addWidget(self._empty_icon, 0, Qt.AlignCenter)
+        empty_layout.addSpacing(20)
 
         self._empty_title = QLabel(self._empty_widget)
         self._empty_title.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(self._empty_title, 0, Qt.AlignCenter)
+        empty_layout.addSpacing(8)
 
         self._empty_hint = QLabel(self._empty_widget)
         self._empty_hint.setAlignment(Qt.AlignCenter)
@@ -359,7 +361,8 @@ class ServerListPanel(QWidget):
                     pass
                 break
 
-    def ping_all(self, method, socks5_port, servers=None, group_key: str = ""):
+    def ping_all(self, method, socks5_port, servers=None, group_key: str = "",
+                 timeout: float | None = None, url: str | None = None):
         """Ping ``servers`` in the global thread pool (never blocks the UI).
 
         Starts the per-row busy animation up front; each result stops its
@@ -394,6 +397,8 @@ class ServerListPanel(QWidget):
             callback=_on_result,
             method=method,
             socks5_port=socks5_port,
+            timeout=timeout,
+            url=url,
         )
         QThreadPool.globalInstance().start(job)
 

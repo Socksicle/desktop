@@ -11,7 +11,10 @@ from utils.platform_utils import get_app_dir
 def load_legal_text(base: str, lang: str | None = None) -> str:
     """Load bundled legal document text from assets/legal/<base>_<ru|en>.txt."""
     legal_dir = get_app_dir() / "assets" / "legal"
-    for candidate_lang in (lang or get_language(), "ru", "en"):
+    current = lang or get_language()
+    # Chinese users get the English legal texts instead of the Russian default.
+    fallbacks = ("en", "ru") if current == "zh" else ("ru", "en")
+    for candidate_lang in (current, *fallbacks):
         file_path = legal_dir / f"{base}_{candidate_lang}.txt"
         if file_path.is_file():
             try:

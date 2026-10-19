@@ -69,10 +69,10 @@ class ServerManager:
                         "minimize_to_tray": True,
                         "auto_update_subs": True, "user_agent_key": "socksicle",
                         "fake_hwid": False, "hwid_value": "",
-                        "engine": "sing-box", "ping_method": DEFAULT_PING_METHOD,
+                        "engine": "auto", "ping_method": DEFAULT_PING_METHOD,
                         "tun_mode": False, "theme_preset": "dynamic", "language": "ru",
-                        "show_active_server_card": True, "show_ip_card": True,
-                        "show_flags": True, "render_backend": "auto"}
+                        "show_active_server_card": False, "show_ip_card": False,
+                        "show_flags": False, "render_backend": "auto"}
 
         return settings
 

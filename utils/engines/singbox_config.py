@@ -6,8 +6,10 @@ in the 1.11-1.14 line.
 """
 import ipaddress
 import logging
+import sys
 from urllib.parse import urlparse
 
+from .. import linux_tun
 from ..server_model import ProxyProtocol, server_identity
 from ..i18n import tr
 from .singbox_outbounds import (
@@ -16,6 +18,14 @@ from .singbox_outbounds import (
 )
 
 log = logging.getLogger("engine.singbox")
+
+_debug_log_enabled = False
+
+
+def set_debug_logs(enabled: bool) -> None:
+    """Set the sing-box log level to full debug output (for --debug runs)."""
+    global _debug_log_enabled
+    _debug_log_enabled = bool(enabled)
 
 # The wintun adapter the TUN inbound creates. The engine waits for and
 # cleans up this adapter by name across restarts.
@@ -254,8 +264,15 @@ def _generate_config(
 
     rules: list[dict] = []
     if tun_mode:
-        rules.append({"action": "sniff"})
-        rules.append({"inbound": ["tun-in"], "protocol": "dns", "action": "hijack-dns"})
+        if sys.platform.startswith("linux"):
+            # sdelay.txt architecture: nftables fast path and kernel-level
+            # bypass pre-matching keep local/game traffic out of sing-box.
+            rules.extend(linux_tun.build_pre_match_rules(
+                dns_hijack_inbound="tun-in"))
+        else:
+            rules.append({"action": "sniff"})
+            rules.append({"inbound": ["tun-in"], "protocol": "dns",
+                          "action": "hijack-dns"})
     else:
         # Sniff only DNS ports so DNS traffic through the mixed inbound is
         # routed to the proxy even when block_udp rejects other UDP.
@@ -272,19 +289,24 @@ def _generate_config(
 
     inbounds: list[dict] = []
     if tun_mode:
-        tun_inbound: dict = {
-            "type": "tun",
-            "tag": "tun-in",
-            "interface_name": TUN_ADAPTER_NAME,
-            "address": [TUN_ADDRESS],
-            "dns_mode": "hijack",
-            "auto_route": True,
-            "strict_route": False,
-            "stack": "system",
-        }
-        if server_ip_cidrs:
-            # Keep direct connections to the proxy endpoints outside the tunnel.
-            tun_inbound["route_exclude_address"] = list(server_ip_cidrs)
+        if sys.platform.startswith("linux"):
+            # sing-box 1.14 TUN inbound: dns_mode hijack + auto_redirect.
+            tun_inbound = linux_tun.build_tun_inbound(
+                exclude_cidrs=list(server_ip_cidrs) if server_ip_cidrs else None)
+        else:
+            tun_inbound = {
+                "type": "tun",
+                "tag": "tun-in",
+                "interface_name": TUN_ADAPTER_NAME,
+                "address": [TUN_ADDRESS],
+                "dns_mode": "hijack",
+                "auto_route": True,
+                "strict_route": False,
+                "stack": "system",
+            }
+            if server_ip_cidrs:
+                # Keep direct connections to the proxy endpoints outside the tunnel.
+                tun_inbound["route_exclude_address"] = list(server_ip_cidrs)
         inbounds.append(tun_inbound)
     inbounds.append({
         "type": "mixed",
@@ -309,7 +331,8 @@ def _generate_config(
         route["auto_detect_interface"] = True
 
     config: dict = {
-        "log": {"level": "warn", "timestamp": True},
+        "log": {"level": "debug" if _debug_log_enabled else "warn",
+                "timestamp": True},
         "dns": dns,
         "inbounds": inbounds,
         "outbounds": outbounds,

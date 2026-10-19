@@ -54,16 +54,58 @@ def get_engine(cls_or_type) -> ProxyEngine:
     return _INSTANCES[et]
 
 
+def resolve_engine_for_server(server, settings: dict) -> EngineType:
+    """Resolve the appropriate EngineType for a given server and settings.
+
+    In 'auto' mode (or when server capabilities strictly dictate), picks:
+      - Protocols exclusive to sing-box (hysteria2, tuic, trojan) -> sing-box
+      - Transports exclusive to Xray (xhttp, splithttp, kcp) -> xray
+      - When TUN mode is enabled -> sing-box (native Wintun/sing-tun) —
+        this wins over any explicit engine preference, because only
+        sing-box provides TUN; xray would silently run without it
+      - Otherwise checks engine binary availability, preferring sing-box.
+    """
+    engine_key = settings.get("engine", "auto")
+    proto = getattr(getattr(server, "protocol", None), "value", getattr(server, "protocol", ""))
+    proto_val = str(proto).lower().strip() if proto else ""
+    transport = getattr(server, "transport", "tcp") or "tcp"
+    transport_val = str(transport).lower().strip() if transport else ""
+
+    if proto_val in ("hysteria2", "tuic", "trojan"):
+        return EngineType.SINGBOX
+
+    if transport_val in ("xhttp", "splithttp", "kcp"):
+        return EngineType.XRAY
+
+    if settings.get("tun_mode", False):
+        return EngineType.SINGBOX
+
+    if engine_key in ("sing-box", "xray"):
+        return EngineType(engine_key)
+
+    if check_engine(EngineType.SINGBOX).usable:
+        return EngineType.SINGBOX
+
+    if check_engine(EngineType.XRAY).usable:
+        return EngineType.XRAY
+
+    return EngineType.SINGBOX
+
+
 def get_current_engine(settings: dict) -> ProxyEngine:
     """Get the engine instance for the currently selected engine type."""
-    engine_key = settings.get("engine", "sing-box")
-    try:
-        et = EngineType(engine_key)
-        if et not in _ENGINES:
-            et = EngineType.SINGBOX
-    except ValueError:
+    engine_key = settings.get("engine", "auto")
+    if engine_key == "auto":
         et = EngineType.SINGBOX
+    else:
+        try:
+            et = EngineType(engine_key)
+            if et not in _ENGINES:
+                et = EngineType.SINGBOX
+        except ValueError:
+            et = EngineType.SINGBOX
     return get_engine(et)
+
 
 
 def check_engine(engine_type: EngineType) -> CheckResult:

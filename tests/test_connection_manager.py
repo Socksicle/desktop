@@ -138,6 +138,20 @@ class ConnectionManagerApplySettingsTest(unittest.TestCase):
 
 class ConnectionManagerSwitchEngineTest(unittest.TestCase):
 
+    def setUp(self):
+        # Engines are process-wide singletons: clear options an earlier test
+        # may have left on them so every test starts from known defaults.
+        for et in (EngineType.SINGBOX, EngineType.XRAY):
+            eng = get_engine(et)
+            if hasattr(eng, "custom_dns"):
+                eng.custom_dns = None
+            if hasattr(eng, "block_udp"):
+                eng.block_udp = False
+            if hasattr(eng, "tun_mode"):
+                eng.tun_mode = False
+            if hasattr(eng, "hy2_insecure"):
+                eng.hy2_insecure = False
+
     def test_switch_engine(self):
         mgr = ConnectionManager()
         self.assertEqual(mgr.engine.engine_type, EngineType.SINGBOX)
@@ -159,6 +173,31 @@ class ConnectionManagerSwitchEngineTest(unittest.TestCase):
         new_engine = get_engine(EngineType.XRAY)
         mgr.switch_engine(new_engine)
         self.assertEqual(mgr.local_port, 2080)
+
+    def test_switch_engine_carries_engine_settings(self):
+        mgr = ConnectionManager()
+        mgr.apply_settings({
+            "custom_dns": "https://dns.quad9.net/dns-query",
+            "block_udp": True,
+        })
+        mgr.switch_engine(get_engine(EngineType.XRAY))
+        self.assertEqual(mgr.engine.engine_type, EngineType.XRAY)
+        self.assertEqual(mgr.engine.custom_dns, "https://dns.quad9.net/dns-query")
+        self.assertTrue(mgr.engine.block_udp)
+
+    def test_apply_settings_tun_switch_keeps_custom_dns(self):
+        mgr = ConnectionManager({"engine": "xray",
+                                 "custom_dns": "https://dns.quad9.net/dns-query"})
+        self.assertEqual(mgr.engine.engine_type, EngineType.XRAY)
+        mgr.apply_settings({"tun_mode": True})
+        self.assertEqual(mgr.engine.engine_type, EngineType.SINGBOX)
+        self.assertEqual(mgr.engine.custom_dns, "https://dns.quad9.net/dns-query")
+
+    def test_apply_settings_engine_switch_keeps_custom_dns(self):
+        mgr = ConnectionManager({"custom_dns": "https://dns.quad9.net/dns-query"})
+        mgr.apply_settings({"engine": "xray"})
+        self.assertEqual(mgr.engine.engine_type, EngineType.XRAY)
+        self.assertEqual(mgr.engine.custom_dns, "https://dns.quad9.net/dns-query")
 
     def test_switch_engine_handles_disconnect_type_error_and_runtime_error(self):
         mgr = ConnectionManager()
@@ -182,6 +221,20 @@ class ConnectionManagerSwitchEngineTest(unittest.TestCase):
 
 
 class ConnectionManagerToggleTest(unittest.TestCase):
+
+    def setUp(self):
+        # Same singleton hygiene as SwitchEngineTest: the auto-switch tests
+        # assert settings carried onto the shared engine instances.
+        for et in (EngineType.SINGBOX, EngineType.XRAY):
+            eng = get_engine(et)
+            if hasattr(eng, "custom_dns"):
+                eng.custom_dns = None
+            if hasattr(eng, "block_udp"):
+                eng.block_udp = False
+            if hasattr(eng, "tun_mode"):
+                eng.tun_mode = False
+            if hasattr(eng, "hy2_insecure"):
+                eng.hy2_insecure = False
 
     def test_toggle_connect(self):
         mgr = ConnectionManager()
@@ -243,6 +296,18 @@ class ConnectionManagerToggleTest(unittest.TestCase):
         self.assertIsNone(mgr.current_server)
         mgr._engine.current_server = "fake"
         self.assertEqual(mgr.current_server, "fake")
+
+    def test_toggle_autoswitch_keeps_custom_dns(self):
+        DNS_URL = "https://dns.quad9.net/dns-query"
+        mgr = ConnectionManager({"custom_dns": DNS_URL})
+        server = SimpleNamespace(host="1.2.3.4", port=443, password="pw",
+                                 transport="xhttp")
+        xray = get_engine(EngineType.XRAY)
+        with mock.patch.object(xray, "start", return_value=True):
+            result = mgr.toggle(server, connect=True)
+            self.assertTrue(result)
+            self.assertIs(mgr.engine, xray)
+            self.assertEqual(xray.custom_dns, DNS_URL)
 
 
 class ConnectionManagerDisconnectTest(unittest.TestCase):
@@ -356,6 +421,24 @@ class ConnectionManagerPingTest(unittest.TestCase):
             mgr._update_ping()
         self.assertEqual(len(started), 1)
         self.assertEqual(started[0].method, "http_head")
+
+    def test_update_ping_honors_configured_timeout_and_url(self):
+        mgr = ConnectionManager({
+            "ping_url": "https://cp.cloudflare.com/generate_204",
+            "ping_timeout": 6,
+        })
+        mgr.state = CONNECTED
+        mgr._geo_last_attempt = time.monotonic()
+        started = []
+        fake_pool = SimpleNamespace(start=started.append)
+        with mock.patch("utils.connection_manager.QThreadPool.globalInstance",
+                        return_value=fake_pool):
+            mgr._update_ping()
+        self.assertEqual(len(started), 1)
+        job = started[0]
+        self.assertEqual(job.host, "cp.cloudflare.com")
+        self.assertEqual(job.timeout, 6.0)
+        self.assertEqual(job.url, "https://cp.cloudflare.com/generate_204")
 
     def test_ping_result_stale_generation_ignored(self):
         mgr = ConnectionManager()

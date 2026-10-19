@@ -52,16 +52,16 @@ The table below reflects the actual status in the codebase:
 
 | Protocol | Status | Supported Engines | Capabilities & Transports |
 |---|---|:---:|---|
-| **Shadowsocks** | ✅ Fully Tested | `sing-box`, `xray` | SIP002 URIs, legacy formats, standard AEAD ciphers, SIP003 plugins (`v2ray-plugin`, `obfs-local`) |
+| **Shadowsocks** | ✅ Fully Tested | `sing-box`, `xray` | SIP002 URIs, legacy formats, standard AEAD ciphers. *(SIP003 plugins are parsed from links but not yet passed to generated engine configs — see [Known Issues](#known-issues-and-limitations))* |
 | **Hysteria 2** | ✅ Fully Tested | `sing-box` | Obfs (`salamander`, `gecko`), multi-port hopping (`server_ports`), bandwidth hints, allow-insecure toggle |
-| **VLESS** | 🟡 Partial | `sing-box`, `xray` | TCP, TLS, REALITY (`xtls-rprx-vision`), WebSocket (`ws`), gRPC, HTTPUpgrade. *(HTTP/2 and XHTTP / split-HTTP are not supported)* |
-| **VMess** | 🟡 Implemented | `sing-box`, `xray` | Standard VMess outbounds, TCP / WS / gRPC transports, auto security; less real-world test coverage than SS/Hy2 |
-| **Trojan** | 🧪 Planned | `sing-box` | Coming in upcoming releases |
-| **TUIC** | 🧪 Planned | `sing-box` | Coming in upcoming releases |
+| **VLESS** | ✅ Supported | `sing-box`, `xray` | TCP, TLS, REALITY (`xtls-rprx-vision`), uTLS fingerprints. Transports: WS, gRPC, HTTP (h2), HTTPUpgrade, QUIC via `sing-box`; WS, gRPC, **XHTTP** via `xray` (auto-routed) |
+| **VMess** | 🟡 Implemented | `sing-box`, `xray` | Standard VMess outbounds, TCP / WS / gRPC transports (plus HTTP (h2), HTTPUpgrade, QUIC via `sing-box`); less real-world test coverage than SS/Hy2 |
+| **Trojan** | ✅ Implemented | `sing-box` | TLS with uTLS, WS / gRPC / HTTP / HTTPUpgrade / QUIC transports |
+| **TUIC** | ✅ Implemented | `sing-box` | TLS (h3 ALPN), congestion control (`bbr` default), UDP relay mode |
 
 Supported manual link schemes:
 ```text
-ss://  vless://  vmess://  hysteria2://  hy2://  trojan://  tuic://  tws3://
+ss://  vless://  vmess://  hysteria2://  hy2://  trojan://  trojan-go://  tuic://  tws3://
 ```
 
 Subscriptions accept plain URL lists, Base64-encoded link lists, or SIP008 JSON over **HTTPS only** (plain HTTP is intentionally blocked).
@@ -72,7 +72,7 @@ Subscriptions accept plain URL lists, Base64-encoded link lists, or SIP008 JSON 
 
 - **Material 3 Interface**: Inspired by modern Material You design, featuring animated hero power button states, dynamic tinting, customizable color palettes (Lavender, Sakura, Mint, AMOLED, and custom hex), and responsive scroll behavior.
 - **Server and Subscription Hub**: Add servers manually or import remote HTTPS subscriptions with automatic background updates, group collapsing, per-group latency checks, and keyword filtering.
-- **Dual Routing Engines**: Choose between `sing-box` (default, required for TUN and Hysteria 2) and `xray` (for Shadowsocks, VLESS, VMess).
+- **Dual Routing Engines**: Choose between `sing-box` (default; required for TUN, Hysteria 2, Trojan, and TUIC) and `xray` (SS/VLESS/VMess, including XHTTP transports). Engine selection in `auto` mode handles protocol and transport constraints automatically.
 - **TUN Mode (Beta)**: Route full operating system traffic through a virtual network interface using sing-box without needing manual system proxy configuration.
 - **Kill Switch (Beta)**: OS firewall enforcement (Windows Defender Firewall or Linux `iptables`) preventing traffic leaks outside the tunnel if the core crashes.
 - **Multi-Method Latency Checks**:
@@ -94,11 +94,11 @@ Subscriptions accept plain URL lists, Base64-encoded link lists, or SIP008 JSON 
   - *macOS is not supported.*
 - **Python**: Version `3.10`, `3.11`, or `3.12`.
 - **Core Engine Binary**:
-  - **sing-box**: Version `1.14.0` or newer (required for TUN mode, Hysteria 2, and TUIC).
-  - **xray**: Version `26.3.0` or newer (optional, alternative backend for SS/VLESS/VMess).
+  - **sing-box**: Version `1.14.0` or newer (enforced by engine preflight; required for TUN mode, Hysteria 2, Trojan, and TUIC).
+  - **xray**: Version `26.3.0` or newer recommended (optional, alternative backend for SS/VLESS/VMess; required for VLESS over XHTTP). The version is displayed on the About screen but not enforced at runtime.
 - **System Privileges (TUN Mode only)**:
   - Windows: Administrator rights (with `wintun.dll` placed next to `sing-box.exe`).
-  - Linux: Root privileges or `cap_net_admin` / Polkit integration (`data/org.socksicle.tun.policy`).
+  - Linux: granted once on first TUN start via a single Polkit prompt — `cap_net_admin,cap_net_bind_service+eip` on sing-box (inheritable, so sing-box's helper processes keep the privileges) and, when systemd-resolved is running, a Polkit rule (`data/polkit/20-socksicle-tun.rules`) that removes the repeated password prompts for link DNS setup. After that, TUN starts without asking for a password.
 
 ---
 
@@ -245,16 +245,17 @@ To perform a clean reset, close the application and delete the configuration fol
 
 *The following list documents verified technical limitations and known issues in the current release:*
 
-1. **Protocol Readiness**: Only **Shadowsocks** and **Hysteria 2** are fully tested in production. **VLESS** support is partial (without HTTP-based transports), **VMess** is experimental, and **Trojan and TUIC are planned for upcoming releases**.
+1. **Protocol Readiness**: Only **Shadowsocks** and **Hysteria 2** are fully tested in production. **VLESS, VMess, Trojan, and TUIC** are implemented (Trojan and TUIC run on `sing-box` only; VLESS XHTTP runs on `xray` only), with less real-world coverage than SS/Hy2.
 2. **No Bundled Engines or In-App Downloader**: Engine binaries are not included in the repository or automatically fetched at runtime. You must download `sing-box` or `xray` manually and place them in the search path.
 3. **Strict Engine Version Bounds**: `sing-box` must be version **1.14.0 or newer**. Older versions will fail preflight checks. For Windows TUN mode, `wintun.dll` matching the core's architecture must reside in the same folder as `sing-box.exe`.
-4. **Single-Instance Concurrency**: Socksicle does not currently enforce a single-process lock. Launching multiple instances can cause port bind conflicts on `127.0.0.1:1080`, conflicting PID markers in `engine_state/`, and concurrent file write races in `settings.json`.
+4. **Single-Instance Concurrency**: A `QLockFile` in the user config directory (`single_instance.lock`) prevents a second instance from starting: it is refused early with an "Already Running" dialog and therefore cannot race on the `127.0.0.1:1080` bind, PID markers in `engine_state/`, or `settings.json` writes. Stale lock files left by a crashed instance are detected and cleared automatically.
 5. **TUN Mode Crash Recovery**: If the application is terminated forcefully (e.g. killed via Task Manager or a power cut) while TUN mode is active, the virtual adapter or default routes may not be restored immediately. Launching Socksicle again triggers `cleanup_stale_core_processes()` to restore system networking.
 6. **Kill Switch Firewall Persistence**: The Kill Switch modifies Windows Defender Firewall or Linux `iptables` rules. If the process is forcibly killed before cleanly disconnecting, outgoing non-proxy traffic may remain blocked until the firewall rules are reset or the machine rebooted.
 7. **DNS-over-TLS (DoT) with Xray**: Xray-core does not support DoT (`tls://`) nameservers. Selecting DoT when using Xray raises a configuration error. Use DoH (`https://`) with Xray or switch to `sing-box`.
 8. **Hysteria 2 Obfs Constraint**: In sing-box, specifying an obfs type without a password causes the core to reject the configuration. Use links containing both fields or leave obfs disabled.
 9. **Test Suite Isolation**: Tests run in an isolated offscreen environment (`QT_QPA_PLATFORM=offscreen`) without real network access or real local port bindings to ensure determinism.
 10. **No macOS Support**: macOS is not supported; platform-specific network routing, service management, and firewall rules are not implemented for Darwin.
+11. **SIP003 Plugin Gap (SS)**: SIP003 plugins (`obfs-local`, `v2ray-plugin`) are accepted in `ss://` links and stored with the server entry, but the generated `sing-box` / `xray` engine configs do not yet include the plugin block. Shadowsocks servers that require a plugin will not connect.
 
 ---
 

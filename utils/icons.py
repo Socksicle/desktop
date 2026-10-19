@@ -7,13 +7,14 @@ flags stay emoji.
 
 from collections import OrderedDict
 import logging
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSize, QRectF, Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-from utils.platform_utils import get_app_dir
+from utils.platform_utils import get_app_dir, get_config_dir
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +130,31 @@ def set_label_icon(label, name: str, color_hex: str, size: int,
         log.warning("set_label_icon('%s') failed: %s", name, e)
     label.setPixmap(QPixmap())
     label.setText(fallback_text)
+
+
+def svg_file(name: str, color_hex: str) -> str | None:
+    """Path to ``name`` tinted with ``color_hex``, as a real cached file.
+
+    Qt stylesheets can only reference SVGs by file path (no data URIs), so
+    tinted variants used by ``::down-arrow`` and similar subcontrols are
+    written to the user config dir once and reused.
+    """
+    key = f"{name}_{color_hex.lstrip('#')}"
+    try:
+        out_dir = get_config_dir() / "icon_cache"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{key}.svg"
+        if not path.is_file():
+            data = _tinted_svg(name, color_hex)
+            if data is None:
+                return None
+            tmp = path.with_name(f"{key}_{os.getpid()}.part")
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        return path.as_posix()
+    except OSError as e:
+        log.warning("Failed to cache tinted SVG '%s': %s", key, e)
+        return None
 
 
 def clear_cache() -> None:

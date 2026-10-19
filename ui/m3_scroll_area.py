@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QScrollArea, QFrame, QWidget
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter, QColor, QBrush
 
 
@@ -155,6 +155,9 @@ class M3ScrollArea(QScrollArea):
         bar = self.verticalScrollBar()
         bar.rangeChanged.connect(lambda _mn, _mx: self._sync_pill())
         bar.valueChanged.connect(lambda _v: self._sync_pill())
+        self._wheel_anim = QPropertyAnimation(bar, b"value", self)
+        self._wheel_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._wheel_target = None
         self.apply_theme()
 
     def set_invert_scroll(self, invert: bool):
@@ -179,27 +182,48 @@ class M3ScrollArea(QScrollArea):
         event.accept()
 
     def _scroll_by_event(self, event):
-        delta = 0
-        if not event.pixelDelta().isNull():
-            delta = event.pixelDelta().y()
-        else:
-            delta = event.angleDelta().y()
-
-        if delta == 0:
-            return
-
         bar = self.verticalScrollBar()
         if not bar or bar.maximum() <= bar.minimum():
             return
 
-        step_size = max(bar.singleStep(), 20) * 3
-        step = int(delta / 120.0 * step_size) if event.pixelDelta().isNull() else delta
+        if not event.pixelDelta().isNull() and event.phase() in (
+                Qt.ScrollBegin, Qt.ScrollUpdate, Qt.ScrollEnd):
+            # Real touchpad gesture: raw pixels, no animation. Never key
+            # mouse wheels off pixelDelta: on Wayland it is synthesized as
+            # angleDelta/8 (e.g. 15px per 120° notch) and scrolls crawl.
+            step = event.pixelDelta().y()
+            if step == 0:
+                return
+            self._stop_wheel_scroll()
+            if self._invert_scroll:
+                bar.setValue(bar.value() + step)
+            else:
+                bar.setValue(bar.value() - step)
+            return
 
-        # Invert direction if requested to eliminate reverse scroll bug
-        if self._invert_scroll:
-            bar.setValue(bar.value() + step)
-        else:
-            bar.setValue(bar.value() - step)
+        # Mouse wheel: angleDelta is authoritative (Qt docs). One notch
+        # (120°) scrolls ~1/6 of the viewport (min 100px).
+        notches = event.angleDelta().y() / 120.0
+        if notches == 0:
+            return
+        notch_px = max(bar.pageStep() / 6.0, 100.0)
+        step = notches * notch_px
+        # Wheel down (negative notches) increases the value, like the old
+        # manual path (`value - step`); invert flips the direction.
+        delta = step if self._invert_scroll else -step
+
+        base = self._wheel_target if self._wheel_target is not None else bar.value()
+        target = max(bar.minimum(), min(bar.maximum(), round(base + delta)))
+        self._wheel_target = target
+        self._wheel_anim.stop()
+        self._wheel_anim.setDuration(140)
+        self._wheel_anim.setStartValue(bar.value())
+        self._wheel_anim.setEndValue(target)
+        self._wheel_anim.start()
+
+    def _stop_wheel_scroll(self):
+        self._wheel_target = None
+        self._wheel_anim.stop()
 
     def _pill_track(self):
         """Return (top, track_h, pill_h, vmin, vmax) or None when no scroll."""
@@ -236,6 +260,7 @@ class M3ScrollArea(QScrollArea):
             self._pill.update()
 
     def _pill_drag_to(self, pill_top_y: float):
+        self._stop_wheel_scroll()
         m = self._pill_track()
         if m is None:
             return

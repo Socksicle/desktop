@@ -15,7 +15,7 @@ class CardActiveServer(QFrame):
         super().__init__(parent)
         self.theme = theme
         self._ping_display_mode = int(ping_display_mode)
-        self._show_flags = True
+        self._show_flags = False
         self._last_flag = "🌐"
         self._last_ms = None
         self.setCursor(Qt.PointingHandCursor)

@@ -1,15 +1,16 @@
 """Edit subscription dialog (name, icon, URL, expiry, traffic)."""
 
 import random
-import webbrowser
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QGridLayout, QApplication
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from ui.message_box import MessageBox
+from ui.wavy_progress_bar import WavyLinearProgressBar
 from utils.window_utils import configure_window
-from utils.locale import format_days_remaining, format_traffic
+from utils.locale import format_days_remaining
+from utils.icons import icon, set_label_icon
 from utils.i18n import tr
 
 ALL_EMOJI_POOL = [
@@ -126,47 +127,77 @@ class EditSubscriptionDialog(QDialog):
         expire_ts = self.sub.get("expires_at") or (traffic_meta.get("expire") if traffic_meta else 0)
         if expire_ts and expire_ts > 0:
             exp_card = QFrame()
-            exp_card.setStyleSheet(f"background-color: {surface_high}; border-radius: 14px; border: none; padding: 6px;")
+            exp_card.setStyleSheet(f"background-color: {surface_high}; border-radius: 12px; border: none;")
             exp_lay = QHBoxLayout(exp_card)
-            exp_lay.setContentsMargins(10, 8, 10, 8)
-            exp_icon = QLabel("⏳")
-            exp_icon.setStyleSheet("font-size: 18px; border: none; background: transparent;")
+            exp_lay.setContentsMargins(12, 6, 12, 6)
+            exp_lay.setSpacing(8)
+
+            exp_icon = QLabel()
+            exp_icon.setFixedSize(16, 16)
+            exp_icon.setAlignment(Qt.AlignCenter)
+            exp_icon.setStyleSheet("border: none; background: transparent;")
+            set_label_icon(exp_icon, "hourglass", accent_hex, 16)
             exp_lay.addWidget(exp_icon)
-            exp_v = QVBoxLayout()
-            exp_v.setSpacing(2)
+
             lbl_exp_title = QLabel(tr("sub.expire_title"))
             lbl_exp_title.setStyleSheet(f"font-size: 10px; font-weight: bold; color: {muted_hex}; border: none; background: transparent;")
-            exp_v.addWidget(lbl_exp_title)
+            exp_lay.addWidget(lbl_exp_title)
+            exp_lay.addStretch()
+
             lbl_exp_val = QLabel(format_days_remaining(expire_ts))
-            lbl_exp_val.setStyleSheet(f"font-size: 13px; color: {accent_hex}; font-weight: bold; border: none; background: transparent;")
-            exp_v.addWidget(lbl_exp_val)
-            exp_lay.addLayout(exp_v, 1)
+            lbl_exp_val.setStyleSheet(f"font-size: 12px; color: {accent_hex}; font-weight: bold; border: none; background: transparent;")
+            exp_lay.addWidget(lbl_exp_val)
             lay.addWidget(exp_card)
 
         if traffic_meta and traffic_meta.get("total", 0) > 0:
             tr_card = QFrame()
-            tr_card.setStyleSheet(f"background-color: {surface_high}; border-radius: 14px; border: none; padding: 6px;")
-            tr_lay = QHBoxLayout(tr_card)
-            tr_lay.setContentsMargins(10, 8, 10, 8)
-            tr_icon = QLabel("📊")
-            tr_icon.setStyleSheet("font-size: 18px; border: none; background: transparent;")
-            tr_lay.addWidget(tr_icon)
-            tr_v = QVBoxLayout()
-            tr_v.setSpacing(2)
+            tr_card.setStyleSheet(f"background-color: {surface_high}; border-radius: 12px; border: none;")
+            tr_lay = QVBoxLayout(tr_card)
+            tr_lay.setContentsMargins(12, 6, 12, 8)
+            tr_lay.setSpacing(6)
+
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.setSpacing(8)
+
+            tr_icon = QLabel()
+            tr_icon.setFixedSize(16, 16)
+            tr_icon.setAlignment(Qt.AlignCenter)
+            tr_icon.setStyleSheet("border: none; background: transparent;")
+            set_label_icon(tr_icon, "data_usage", accent_hex, 16)
+            head.addWidget(tr_icon)
+
             lbl_tr_title = QLabel(tr("sub.traffic_title"))
             lbl_tr_title.setStyleSheet(f"font-size: 10px; font-weight: bold; color: {muted_hex}; border: none; background: transparent;")
-            tr_v.addWidget(lbl_tr_title)
-            tr_text = format_traffic(traffic_meta.get("used", 0), traffic_meta.get("total", 0))
-            lbl_tr_val = QLabel(tr_text)
-            lbl_tr_val.setStyleSheet(f"font-size: 12px; color: {accent_hex}; font-weight: bold; border: none; background: transparent;")
-            tr_v.addWidget(lbl_tr_val)
-            tr_lay.addLayout(tr_v, 1)
+            head.addWidget(lbl_tr_title)
+            head.addStretch()
+
+            used_bytes = traffic_meta.get("used", 0)
+            total_bytes = traffic_meta.get("total", 0)
+            used_gb = used_bytes / (1024 ** 3)
+            total_gb = total_bytes / (1024 ** 3)
+            used_str = f"{used_gb:.2f}".rstrip('0').rstrip('.') if used_gb % 1 else f"{int(used_gb)}"
+            total_str = f"{total_gb:.2f}".rstrip('0').rstrip('.') if total_gb % 1 else f"{int(total_gb)}"
+
+            self.lbl_tr_val = QLabel(f"{used_str} GB / {total_str} GB")
+            self.lbl_tr_val.setStyleSheet(f"font-size: 12px; color: {accent_hex}; font-weight: bold; border: none; background: transparent;")
+            head.addWidget(self.lbl_tr_val)
+            tr_lay.addLayout(head)
+
+            pct = min(100.0, max(0.0, (used_bytes / total_bytes) * 100.0)) if total_bytes > 0 else 0.0
+            self.bar_traffic = WavyLinearProgressBar(self.theme)
+            self.bar_traffic.set_value(pct / 100.0)
+            tr_lay.addWidget(self.bar_traffic)
             lay.addWidget(tr_card)
 
         if self.sub.get("url"):
             btn_share = QPushButton(tr("sub.copy_link"))
             btn_share.setFixedHeight(38)
             btn_share.setCursor(Qt.PointingHandCursor)
+            ic_copy = icon("copy", text_hex, 16)
+            if ic_copy:
+                btn_share.setIcon(ic_copy)
+                btn_share.setIconSize(QSize(16, 16))
             btn_share.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {surface_high};
@@ -183,31 +214,14 @@ class EditSubscriptionDialog(QDialog):
             btn_share.clicked.connect(self._share_sub)
             lay.addWidget(btn_share)
 
-        tg_url = self.sub.get("support_url") or self.sub.get("telegram", "")
-        if tg_url:
-            btn_tg = QPushButton(tr("sub.provider_tg"))
-            btn_tg.setFixedHeight(38)
-            btn_tg.setCursor(Qt.PointingHandCursor)
-            btn_tg.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(34, 158, 217, 0.15);
-                    color: #4DB8E8;
-                    border-radius: 12px;
-                    font-weight: 600;
-                    font-size: 12.5px;
-                    border: 1px solid rgba(34, 158, 217, 0.3);
-                }
-                QPushButton:hover {
-                    background-color: rgba(34, 158, 217, 0.25);
-                }
-            """)
-            btn_tg.clicked.connect(lambda: webbrowser.open(tg_url))
-            lay.addWidget(btn_tg)
-
         is_pinned = self.sub.get("is_pinned", False)
         self.btn_pin = QPushButton(tr("sub.unpin") if is_pinned else tr("sub.pin"))
         self.btn_pin.setFixedHeight(38)
         self.btn_pin.setCursor(Qt.PointingHandCursor)
+        ic_pin = icon("pin", text_hex, 16)
+        if ic_pin:
+            self.btn_pin.setIcon(ic_pin)
+            self.btn_pin.setIconSize(QSize(16, 16))
         self.btn_pin.setStyleSheet(f"""
             QPushButton {{
                 background-color: {surface_high};
@@ -228,6 +242,10 @@ class EditSubscriptionDialog(QDialog):
             btn_del = QPushButton(tr("sub.delete"))
             btn_del.setFixedHeight(38)
             btn_del.setCursor(Qt.PointingHandCursor)
+            ic_del = icon("delete", "#FF6B6B", 16)
+            if ic_del:
+                btn_del.setIcon(ic_del)
+                btn_del.setIconSize(QSize(16, 16))
             btn_del.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(255, 51, 51, 0.12);
@@ -336,6 +354,10 @@ class EditSubscriptionDialog(QDialog):
         current = not self.sub.get("is_pinned", False)
         self.sub["is_pinned"] = current
         self.btn_pin.setText(tr("sub.unpin") if current else tr("sub.pin"))
+        ic_pin = icon("pin", getattr(self.theme, "on_surface", "#E6E0E9"), 16)
+        if ic_pin:
+            self.btn_pin.setIcon(ic_pin)
+            self.btn_pin.setIconSize(QSize(16, 16))
         self.manager.set_pinned(self.sub.get("name", ""), current)
 
     def _delete_sub(self):

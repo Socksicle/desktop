@@ -231,6 +231,14 @@ def test_group_card_busy_states(qapp):
     card.set_refreshing(True)
     assert card.btn_refresh.isEnabled() is False
     assert card.sub_label.text() != "sub"
+    assert card._spin_timer.isActive() is True
+
+    card._spin_tick()
+    card._spin_tick()
+    assert card.btn_refresh.icon().pixmap(36, 36).toImage() != card._refresh_pixmap.toImage()
+
     card.set_refreshing(False)
     assert card.btn_refresh.isEnabled() is True
     assert card.sub_label.text() == "sub"
+    assert card._spin_timer.isActive() is False
+    assert card.btn_refresh.icon().pixmap(36, 36).toImage() == card._refresh_pixmap.toImage()

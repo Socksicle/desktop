@@ -3,6 +3,7 @@ connection flow it feeds into.  GUI bits run on the offscreen Qt platform;
 all network and subprocess activity is mocked.
 """
 import io
+import json
 import tempfile
 import time
 import unittest
@@ -13,6 +14,7 @@ from unittest import mock
 import pytest
 
 from utils import startup_utils
+from utils.i18n import set_language
 from utils.engines.base import (
     EngineType, CheckResult, )
 from utils.engines import base as engine_base
@@ -166,6 +168,55 @@ class ConnectionFlowTest(unittest.TestCase):
         from utils.i18n import tr
         self.assertIn(tr("engine.binary_not_found").format(name="sing-box"), emitted[0][0])
         self.assertTrue(emitted[0][1])
+
+
+class SingleInstanceLockTest(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_second_lock_attempt_fails_until_released(self):
+        with mock.patch("utils.platform_utils.get_config_dir",
+                        return_value=self.root):
+            first = startup_utils.acquire_single_instance_lock()
+            self.assertIsNotNone(first)
+            self.assertIsNone(startup_utils.acquire_single_instance_lock())
+            first.unlock()
+            again = startup_utils.acquire_single_instance_lock()
+            self.assertIsNotNone(again)
+            self.addCleanup(again.unlock)
+
+    def test_lock_file_created_in_config_dir(self):
+        from PySide6.QtCore import QLockFile
+        with mock.patch("utils.platform_utils.get_config_dir",
+                        return_value=self.root):
+            lock = startup_utils.acquire_single_instance_lock()
+        self.assertTrue((self.root / "single_instance.lock").exists())
+        self.assertIsInstance(lock, QLockFile)
+        self.addCleanup(lock.unlock)
+
+    def test_already_running_dialog_uses_translated_strings(self):
+        box = mock.MagicMock()
+        box.return_value.exec.return_value = 0
+        with mock.patch.object(startup_utils, "QMessageBox", box):
+            startup_utils.show_already_running()
+        from utils.i18n import tr
+        self.assertEqual(tr("app.already_running_title"),
+                         box.return_value.setWindowTitle.call_args.args[0])
+        self.assertEqual(tr("app.already_running_text"),
+                         box.return_value.setText.call_args.args[0])
+        self.assertEqual(box.return_value.exec.call_count, 1)
+
+    def test_apply_language_from_settings_reads_config(self):
+        settings_path = self.root / "settings.json"
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump({"language": "en"}, f)
+        with mock.patch("utils.platform_utils.get_config_dir",
+                        return_value=self.root):
+            self.assertEqual(startup_utils.apply_language_from_settings(), "en")
+        self.assertEqual(set_language(None), "ru")
 
 
 class _FakeProc:

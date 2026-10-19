@@ -45,3 +45,16 @@ def configure_window(window, frameless: bool = True) -> None:
         flags |= Qt.FramelessWindowHint
     window.setWindowFlags(flags)
     window.setAttribute(Qt.WA_TranslucentBackground, compositing_available())
+
+
+def start_window_move(window) -> bool:
+    """Ask the window manager to start moving the top-level window.
+
+    Manual ``QWidget.move()`` dragging does nothing on Wayland, where only
+    the compositor may reposition windows.  ``startSystemMove()`` covers
+    Windows, X11 and Wayland.  Returns False on platforms without
+    client-initiated system moves (e.g. the offscreen QPA used in tests),
+    so callers can fall back to their own drag logic.
+    """
+    handle = window.windowHandle()
+    return handle is not None and handle.startSystemMove()

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Property, QRect
 from PySide6.QtGui import QColor, QPainter, QBrush, QFont, QPixmap, QPen
 
 from utils.icons import set_button_icon as _set_btn_icon
-from utils.window_utils import configure_window
+from utils.window_utils import configure_window, compositing_available
 from utils.i18n import tr
 from .signal_bars_view import SignalBarsView
 from .config_tag_badge import ConfigTagBadge, build_badge_texts
@@ -24,7 +24,7 @@ class AnimatedRadioButton(QRadioButton):
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = theme
-        self._show_flags = True
+        self._show_flags = False
         self._bg_color = self._compute_bg(checked=False, hovered=False)
         self._bg_anim = QPropertyAnimation(self, b"bgColor")
         self._bg_anim.setDuration(200)
@@ -180,7 +180,7 @@ class AnimatedRadioButton(QRadioButton):
 
 class ServerItem(QFrame):
     def __init__(self, text, server=None, theme=None, parent=None, ping_display_mode: int = 0,
-                 show_flags: bool = True):
+                 show_flags: bool = False):
         super().__init__(parent)
         self.server = server
         self.theme = theme
@@ -417,18 +417,20 @@ class ServerItem(QFrame):
         from PySide6.QtWidgets import QMenu
 
         menu = QMenu(self)
+        menu.setAttribute(Qt.WA_TranslucentBackground, compositing_available())
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         menu.setStyleSheet(f"""
             QMenu {{
                 background-color: {getattr(self.theme, 'surface_container_high', '#241F32')};
                 color: {getattr(self.theme, 'on_surface', '#E6E0E9')};
-                border: 1px solid rgba(147, 143, 153, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 12px;
                 padding: 6px;
             }}
             QMenu::item {{ padding: 8px 16px; border-radius: 8px; }}
             QMenu::item:selected {{
-                background-color: {getattr(self.theme, 'primary', '#D0BCFF')};
-                color: #000000;
+                background-color: {getattr(self.theme, 'primary', '#D0BCFF')}33;
+                color: {getattr(self.theme, 'primary', '#D0BCFF')};
             }}
         """)
         act_qr = QAction(tr("item.menu_qr"), self)

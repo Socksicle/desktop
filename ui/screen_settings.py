@@ -1,10 +1,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QComboBox, QSpinBox, QPushButton, QLineEdit, QSizePolicy,
-    QColorDialog,
+    QColorDialog, QAbstractItemView,
 )
-from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen
+from PySide6.QtCore import Qt, Signal, QPointF, QSize
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPalette
 
 from .toggle_switch import AnimatedToggleSwitch
 from .m3_scroll_area import M3ScrollArea
@@ -28,6 +28,7 @@ from .settings_options import (
 from utils.i18n import tr
 from utils.startup_utils import is_autostart_enabled, set_autostart
 from utils import icons
+from utils.window_utils import compositing_available
 
 
 class ThemeSwatchButton(QWidget):
@@ -661,7 +662,7 @@ class SettingsScreen(QWidget):
             app_layout,
             tr("set.card_server"),
             tr("set.card_server_sub"),
-            self.settings.get("show_active_server_card", True),
+            self.settings.get("show_active_server_card", False),
             visible=False,
         )
         self.sw_show_server_card.toggled.connect(lambda s: self._emit_setting("show_active_server_card", s))
@@ -670,7 +671,8 @@ class SettingsScreen(QWidget):
             app_layout,
             tr("set.card_ip"),
             tr("set.card_ip_sub"),
-            self.settings.get("show_ip_card", True)
+            self.settings.get("show_ip_card", False),
+            visible=False,
         )
         self.sw_show_ip_card.toggled.connect(lambda s: self._emit_setting("show_ip_card", s))
 
@@ -678,7 +680,7 @@ class SettingsScreen(QWidget):
             app_layout,
             tr("set.flags"),
             tr("set.flags_sub"),
-            self.settings.get("show_flags", True),
+            self.settings.get("show_flags", False),
             visible=False,
         )
         self.sw_show_flags.toggled.connect(lambda s: self._emit_setting("show_flags", s))
@@ -715,13 +717,13 @@ class SettingsScreen(QWidget):
         conn_layout.setSpacing(14)
 
         # Fall back to default engine if stored id is unknown or removed
-        if self.settings.get("engine", "sing-box") not in ENGINE_IDS:
+        if self.settings.get("engine", ENGINE_FALLBACK) not in ENGINE_IDS:
             self.settings["engine"] = ENGINE_FALLBACK
         self.engine_combo = self._add_combo_row(
             conn_layout,
             tr("set.engine_label"),
             [(val, tr(label_key)) for val, label_key in ENGINE_OPTIONS],
-            self.settings.get("engine", "sing-box")
+            self.settings.get("engine", ENGINE_FALLBACK)
         )
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
 
@@ -791,7 +793,8 @@ class SettingsScreen(QWidget):
 
         self.edit_custom_dns = QLineEdit()
         self.edit_custom_dns.setPlaceholderText(tr("set.dns_custom_ph"))
-        self.edit_custom_dns.setFixedHeight(40)
+        self._apply_placeholder_color(self.edit_custom_dns)
+        self.edit_custom_dns.setFixedHeight(42)
         self.edit_custom_dns.setText(self.settings.get("custom_dns_manual", "") or (self.settings.get("custom_dns", "") if current_provider == "custom" else ""))
         self.edit_custom_dns.textChanged.connect(self._on_custom_dns_changed)
         self.edit_custom_dns.setVisible(current_provider == "custom")
@@ -907,8 +910,9 @@ class SettingsScreen(QWidget):
         ping_layout.addWidget(lbl_url)
 
         self.edit_ping_url = QLineEdit()
-        self.edit_ping_url.setFixedHeight(40)
+        self.edit_ping_url.setFixedHeight(42)
         self.edit_ping_url.setPlaceholderText("https://connectivitycheck.gstatic.com/generate_204")
+        self._apply_placeholder_color(self.edit_ping_url)
         self.edit_ping_url.setText(self.settings.get("ping_url", "https://connectivitycheck.gstatic.com/generate_204"))
         self.edit_ping_url.textChanged.connect(lambda u: self._emit_setting("ping_url", u.strip()))
         ping_layout.addWidget(self.edit_ping_url)
@@ -938,6 +942,7 @@ class SettingsScreen(QWidget):
         self.btn_logs.setCursor(Qt.PointingHandCursor)
         self.btn_logs.setFixedHeight(42)
         self.btn_logs.clicked.connect(self.showLogsRequested.emit)
+        self._set_logs_icon()
         sys_layout.addWidget(self.btn_logs)
 
     def show_hub(self):
@@ -1017,6 +1022,114 @@ class SettingsScreen(QWidget):
         parent_layout.addWidget(row_widget)
         return sw
 
+    @staticmethod
+    def _arrow_rule(name: str, color_hex: str, size: int = 20) -> str:
+        """Stylesheet rule body for arrow subcontrols (combo/spin arrows).
+
+        Qt always paints subcontrol borders as rectangles, so the CSS border
+        triangle only works as a fallback when the SVG icon is unavailable.
+        """
+        path = icons.svg_file(name, color_hex)
+        if path is not None:
+            return f'image: url("{path}"); width: {size}px; height: {size}px;'
+        half = size // 4
+        base = (
+            f"width: 0px; height: 0px;"
+            f" border-left: {half}px solid transparent;"
+            f" border-right: {half}px solid transparent;"
+        )
+        edge = "border-bottom" if name.endswith("_up") else "border-top"
+        return f"{base} {edge}: {half}px solid {color_hex};"
+
+    @staticmethod
+    def _combobox_stylesheet(theme) -> str:
+        accent_hex = getattr(theme, "primary", "#D0BCFF")
+        surface_high = getattr(theme, "surface_container_high", "#241F32")
+        surface_highest = getattr(theme, "surface_container_highest", "#2E283E")
+        text_hex = getattr(theme, "on_surface", "#E6E0E9")
+        muted_hex = getattr(theme, "outline", "#938F99")
+        return f"""
+            QComboBox {{
+                background-color: {surface_high};
+                color: {text_hex};
+                border: 1px solid rgba(147, 143, 153, 0.25);
+                border-radius: 12px;
+                padding: 6px 14px;
+                font-size: 13px;
+                outline: none;
+            }}
+            QComboBox:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: {surface_highest};
+            }}
+            QComboBox:focus, QComboBox:on {{
+                border: 1.5px solid {accent_hex};
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 32px;
+                border: none;
+            }}
+            QComboBox::down-arrow {{
+                {SettingsScreen._arrow_rule("arrow_drop_down", muted_hex)}
+                margin-right: 8px;
+            }}
+            QComboBox::down-arrow:on {{
+                {SettingsScreen._arrow_rule("arrow_drop_down", accent_hex)}
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {surface_high};
+                color: {text_hex};
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 14px;
+                padding: 6px;
+                outline: none;
+                selection-background-color: transparent;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 36px;
+                padding: 4px 12px;
+                border-radius: 8px;
+                color: {text_hex};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: {accent_hex}33;
+                color: {accent_hex};
+                font-weight: 600;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: rgba(255, 255, 255, 0.08);
+            }}
+            QComboBox QAbstractItemView QScrollBar:vertical {{
+                background: transparent;
+                width: 6px;
+                margin: 6px 2px 6px 0;
+            }}
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 3px;
+                min-height: 20px;
+            }}
+            QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.35);
+            }}
+            QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+        """
+
+    def _style_combobox(self, combo: QComboBox, theme=None):
+        t = theme or self.theme
+        if t:
+            combo.setStyleSheet(self._combobox_stylesheet(t))
+
     def _add_combo_row(self, parent_layout: QVBoxLayout, title: str, items: list[tuple[str, str]], current_val: str) -> QComboBox:
         row = QVBoxLayout()
         row.setSpacing(6)
@@ -1027,6 +1140,19 @@ class SettingsScreen(QWidget):
 
         combo = QComboBox()
         combo.setFixedHeight(42)
+        combo.setCursor(Qt.PointingHandCursor)
+
+        view = combo.view()
+        view.setMouseTracking(True)
+        view.viewport().setAttribute(Qt.WA_Hover, True)
+        view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+        popup_win = view.window()
+        popup_win.setAttribute(Qt.WA_TranslucentBackground, compositing_available())
+        popup_win.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+
+        self._style_combobox(combo)
+
         for val, label in items:
             combo.addItem(label, val)
 
@@ -1147,6 +1273,15 @@ class SettingsScreen(QWidget):
         set_autostart(checked)
         self._emit_setting("auto_start", checked)
 
+    def set_tun_mode(self, on: bool):
+        """Sync the switch when TUN is toggled on the main screen.
+
+        The Connection section (and sw_tun) may not be built yet; when it is
+        built later it reads the (already updated) tun_mode from settings.
+        """
+        if self.sw_tun is not None:
+            self.sw_tun.setChecked(bool(on))
+
     def _update_hub_live_values(self):
         pm = self.settings.get("ping_method", "thp")
         pm_names = {
@@ -1181,11 +1316,25 @@ class SettingsScreen(QWidget):
         self.settingChanged.emit(key, val)
         self._update_hub_live_values()
 
+    def _set_logs_icon(self):
+        text_hex = getattr(self.theme, "on_surface", "#E6E0E9")
+        ic = icons.icon("description", text_hex, 20)
+        if ic is not None:
+            self.btn_logs.setIcon(ic)
+            self.btn_logs.setIconSize(QSize(20, 20))
+
+    @staticmethod
+    def _apply_placeholder_color(edit, color: str = "#938F99"):
+        pal = edit.palette()
+        pal.setColor(QPalette.PlaceholderText, QColor(color))
+        edit.setPalette(pal)
+
     def apply_theme(self, theme):
         self.theme = theme
         accent_hex = getattr(theme, "primary", "#D0BCFF")
         surface_hex = getattr(theme, "surface_container", getattr(theme, "surface", "#1A1624"))
         surface_high = getattr(theme, "surface_container_high", "#241F32")
+        surface_highest = getattr(theme, "surface_container_highest", "#2E283E")
         text_hex = getattr(theme, "on_surface", "#E6E0E9")
         muted_hex = getattr(theme, "outline", "#938F99")
 
@@ -1209,27 +1358,7 @@ class SettingsScreen(QWidget):
                 background: transparent;
                 margin-top: 4px;
             }}
-            QComboBox {{
-                background-color: {surface_high};
-                color: {text_hex};
-                border: 1px solid rgba(147, 143, 153, 0.25);
-                border-radius: 12px;
-                padding: 6px 14px;
-                font-size: 13px;
-                outline: none;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 24px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {surface_high};
-                color: {text_hex};
-                border: 1px solid rgba(147, 143, 153, 0.25);
-                border-radius: 12px;
-                selection-background-color: {accent_hex};
-                selection-color: #000000;
-            }}
+{self._combobox_stylesheet(theme)}
             QLineEdit {{
                 background-color: {surface_high};
                 color: {text_hex};
@@ -1239,14 +1368,52 @@ class SettingsScreen(QWidget):
                 font-size: 13px;
                 outline: none;
             }}
+            QLineEdit:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: {surface_highest};
+            }}
+            QLineEdit:focus {{
+                border: 1.5px solid {accent_hex};
+            }}
             QSpinBox {{
                 background-color: {surface_high};
                 color: {text_hex};
                 border: 1px solid rgba(147, 143, 153, 0.25);
                 border-radius: 12px;
-                padding: 6px 10px;
+                padding: 3px 10px 3px 14px;
                 font-size: 13px;
                 outline: none;
+            }}
+            QSpinBox:hover {{
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: {surface_highest};
+            }}
+            QSpinBox:focus {{
+                border: 1.5px solid {accent_hex};
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                subcontrol-origin: border;
+                background: transparent;
+                border: none;
+                width: 26px;
+            }}
+            QSpinBox::up-button {{
+                subcontrol-position: top right;
+                height: 17px;
+            }}
+            QSpinBox::down-button {{
+                subcontrol-position: bottom right;
+                height: 17px;
+            }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+                background: rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+            }}
+            QSpinBox::up-arrow {{
+                {self._arrow_rule("arrow_drop_up", muted_hex, 18)}
+            }}
+            QSpinBox::down-arrow {{
+                {self._arrow_rule("arrow_drop_down", muted_hex, 18)}
             }}
             QPushButton {{
                 background-color: {surface_high};
@@ -1312,6 +1479,9 @@ class SettingsScreen(QWidget):
                 }}
             """)
 
+        if hasattr(self, "btn_logs") and self.btn_logs is not None:
+            self._set_logs_icon()
+
         if hasattr(self, "lbl_group_network"):
             self.lbl_group_network.setStyleSheet(
                 f"color: {muted_hex}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; background: transparent; padding-left: 6px;"
@@ -1333,3 +1503,6 @@ class SettingsScreen(QWidget):
         for sw in [self.sw_amoled, self.sw_invert_scroll, self.sw_show_server_card, self.sw_show_ip_card, self.sw_show_flags, self.sw_tun, self.sw_killswitch, self.sw_hy2_insecure, self.sw_block_udp, self.sw_autostart, self.sw_tray, self.sw_auto_update_subs]:
             if sw is not None:
                 sw.apply_theme(theme)
+
+        for cb in self.findChildren(QComboBox):
+            self._style_combobox(cb, theme)

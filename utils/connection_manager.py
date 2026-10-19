@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot, QThreadPool, QRunnable
 
 from .geo_utils import fetch_ip_info_via_proxy
 from .i18n import tr
-from .ping import socks5_proxy_ready, ProxyPingJob, PING_PROBE_HOST
+from .ping import socks5_proxy_ready, ProxyPingJob, PING_PROBE_HOST, parse_ping_url, DEFAULT_PING_TIMEOUT
 from .engines.engine_manager import get_current_engine
 from .engines.base import DEFAULT_LOCAL_PORT, check_local_port
 
@@ -146,6 +146,7 @@ class ConnectionManager(QObject):
         if hasattr(self._engine, "block_udp"):
             self._engine.block_udp = bool(self._settings.get("block_udp", False))
         self.kill_switch_enabled = bool(self._settings.get("killswitch", False))
+        engine_val = self._settings.get("engine", "auto")
         if tun_mode:
             from .engines.base import EngineType
             from .engines.engine_manager import get_engine
@@ -153,8 +154,15 @@ class ConnectionManager(QObject):
                 self.switch_engine(get_engine(EngineType.SINGBOX))
             if hasattr(self._engine, "tun_mode"):
                 self._engine.tun_mode = True
-        elif hasattr(self._engine, "tun_mode"):
-            self._engine.tun_mode = False
+        else:
+            if not self.is_connected and engine_val in ("xray", "sing-box"):
+                from .engines.base import EngineType
+                from .engines.engine_manager import get_engine
+                target_et = EngineType(engine_val)
+                if getattr(self._engine, "engine_type", None) != target_et:
+                    self.switch_engine(get_engine(target_et))
+            if hasattr(self._engine, "tun_mode"):
+                self._engine.tun_mode = False
 
     @property
     def current_server(self):
@@ -164,7 +172,7 @@ class ConnectionManager(QObject):
         """Switch to a different engine instance."""
         if self.is_connected:
             self.disconnect()
-        old_port = self._engine.local_port
+        old_port = getattr(self._engine, "local_port", DEFAULT_LOCAL_PORT)
         old = self._engine
         try:
             old.statusChanged.disconnect(self._on_status_changed)
@@ -183,6 +191,13 @@ class ConnectionManager(QObject):
         engine.connectionStateChanged.connect(self._on_connection_state_changed)
         engine.logUpdated.connect(self.logUpdated)
         engine.local_port = old_port
+        # apply_settings() and _toggle_locked() set engine-level options on
+        # the active engine before (or independently of) a switch; without
+        # this carry-over a dropped engine takes custom_dns and the toggles
+        # with it and the replacement silently falls back to defaults.
+        for attr in ("custom_dns", "hy2_insecure", "block_udp", "tun_mode"):
+            if hasattr(old, attr) and hasattr(engine, attr):
+                setattr(engine, attr, getattr(old, attr))
         if hasattr(self._engine, "set_available_servers") and hasattr(self, "_available_servers"):
             self._engine.set_available_servers(self._available_servers)
 
@@ -245,20 +260,20 @@ class ConnectionManager(QObject):
                 self.disconnect()
                 self._last_connected_server = server
 
+            from .engines.engine_manager import get_engine, resolve_engine_for_server
+            target_engine_type = resolve_engine_for_server(server, self._settings)
+            current_engine_type = getattr(self._engine, "engine_type", None)
+            if current_engine_type is not None and current_engine_type != target_engine_type:
+                log.info("Auto-switching engine to %s for server %s", target_engine_type.value, getattr(server, "name", server))
+                self.switch_engine(get_engine(target_engine_type))
+
             tun_mode = self._settings.get("tun_mode", False)
-            proto_val = getattr(getattr(server, "protocol", None), "value", getattr(server, "protocol", ""))
-            if tun_mode or proto_val in ("hysteria2", "tuic", "trojan"):
-                from .engines.base import EngineType
-                from .engines.engine_manager import get_engine
-                if getattr(self._engine, "engine_type", None) != EngineType.SINGBOX:
-                    log.info("Auto-switching engine to sing-box (TUN: %s, Protocol: %s)", tun_mode, proto_val)
-                    self.switch_engine(get_engine(EngineType.SINGBOX))
-                if hasattr(self._engine, "tun_mode"):
-                    self._engine.tun_mode = bool(tun_mode)
-                if hasattr(self._engine, "hy2_insecure"):
-                    self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
-                if hasattr(self._engine, "block_udp"):
-                    self._engine.block_udp = bool(self._settings.get("block_udp", False))
+            if hasattr(self._engine, "tun_mode"):
+                self._engine.tun_mode = bool(tun_mode)
+            if hasattr(self._engine, "hy2_insecure"):
+                self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
+            if hasattr(self._engine, "block_udp"):
+                self._engine.block_udp = bool(self._settings.get("block_udp", False))
 
             self.state = CONNECTING
             self.is_connecting = True
@@ -515,10 +530,15 @@ class ConnectionManager(QObject):
         if not self.is_connected:
             return
         gen = self._generation
+        timeout = float(self._settings.get("ping_timeout", DEFAULT_PING_TIMEOUT))
+        url = self._settings.get("ping_url") or None
+        host, _, _, _ = parse_ping_url(url)
         QThreadPool.globalInstance().start(ProxyPingJob(
-            PING_PROBE_HOST, int(self.local_port),
+            host, int(self.local_port),
             lambda ms, gen=gen: self._on_ping_result(gen, ms),
-            method="http_head"))
+            method="http_head",
+            timeout=timeout,
+            url=url))
 
     def _on_ping_result(self, gen, ms):
         """Forward a ping result, dropping results from older connections."""

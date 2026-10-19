@@ -34,6 +34,7 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QTimer,
+    SLOT,
     Slot,
     Qt,
 )
@@ -41,7 +42,7 @@ from ui.message_box import MessageBox
 QMessageBox = MessageBox
 
 from utils.platform_utils import is_linux, is_windows, setup_logging
-from utils.i18n import tr
+from utils.i18n import set_language, tr
 from utils.engines.engine_manager import (
     EngineType, get_engine,
 )
@@ -75,30 +76,14 @@ NM_SIGNAL_STATE_CHANGED = "StateChanged"
 
 
 def _subscribe_dbus_signal(bus, service: str, path: str, interface: str, name: str,
-                           receiver: QObject, slot_fn, slot_name: str) -> bool:
-    """Connect a D-Bus signal to a receiver slot, trying callable and named slot signatures."""
-    try:
-        res = bus.connect(service, path, interface, name, slot_fn)
-        if res:
-            return True
-    except Exception as e:
-        log.debug("bus.connect with callable (%s) failed: %s", name, e)
+                           receiver: QObject, slot_name: str, arg_type: str) -> bool:
+    """Connect a D-Bus signal to a QObject slot.
 
-    try:
-        res = bus.connect(service, path, interface, name, receiver, slot_name)
-        if res:
-            return True
-    except Exception as e:
-        log.debug("bus.connect with receiver/slot_name (%s) failed: %s", name, e)
-
-    try:
-        res = bus.connect(service, path, interface, name, receiver, slot_fn)
-        if res:
-            return True
-    except Exception as e:
-        log.debug("bus.connect with receiver/slot_fn (%s) failed: %s", name, e)
-
-    return False
+    PySide6's QtDBus only accepts the receiver + SLOT("name(types)") form;
+    plain strings and raw callables are rejected or silently fail.
+    """
+    slot = SLOT(f"{slot_name}({arg_type})")
+    return bool(bus.connect(service, path, interface, name, receiver, slot))
 
 
 class LinuxDBusPowerNetworkFilter(QObject):
@@ -144,8 +129,8 @@ class LinuxDBusPowerNetworkFilter(QObject):
                     LOGIN1_INTERFACE,
                     LOGIN1_SIGNAL_PREPARE_FOR_SLEEP,
                     self,
-                    self.handle_prepare_for_sleep,
                     "handle_prepare_for_sleep",
+                    "bool",
                 )
                 if self._login1_connected:
                     log.info("Subscribed to systemd-logind PrepareForSleep D-Bus signal.")
@@ -163,8 +148,8 @@ class LinuxDBusPowerNetworkFilter(QObject):
                     NM_INTERFACE,
                     NM_SIGNAL_STATE_CHANGED,
                     self,
-                    self.handle_nm_state_changed,
                     "handle_nm_state_changed",
+                    "int",
                 )
                 if self._nm_connected:
                     log.info("Subscribed to NetworkManager StateChanged D-Bus signal.")
@@ -232,7 +217,8 @@ class LinuxDBusPowerNetworkFilter(QObject):
                         LOGIN1_PATH,
                         LOGIN1_INTERFACE,
                         LOGIN1_SIGNAL_PREPARE_FOR_SLEEP,
-                        self.handle_prepare_for_sleep,
+                        self,
+                        SLOT("handle_prepare_for_sleep(bool)"),
                     )
                 except (AttributeError, RuntimeError, TypeError):
                     pass
@@ -244,7 +230,8 @@ class LinuxDBusPowerNetworkFilter(QObject):
                         NM_PATH,
                         NM_INTERFACE,
                         NM_SIGNAL_STATE_CHANGED,
-                        self.handle_nm_state_changed,
+                        self,
+                        SLOT("handle_nm_state_changed(int)"),
                     )
                 except (AttributeError, RuntimeError, TypeError):
                     pass
@@ -491,6 +478,24 @@ def apply_render_backend(backend: object) -> str:
     return normalized
 
 
+def _read_settings_file() -> dict:
+    """Read the persisted settings.json from the user config dir.
+
+    Returns {} when the file is missing or not a dict of settings; IO and
+    JSON errors propagate to the caller.
+    """
+    import json
+
+    from utils.platform_utils import get_config_dir
+
+    path = get_config_dir() / "settings.json"
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        value = json.load(f)
+    return value if isinstance(value, dict) else {}
+
+
 def load_render_backend_from_settings(settings: dict | None = None) -> str:
     """Resolve the persisted render backend without instantiating ServerManager.
 
@@ -501,17 +506,45 @@ def load_render_backend_from_settings(settings: dict | None = None) -> str:
     if isinstance(settings, dict) and settings.get("render_backend") is not None:
         return normalize_render_backend(settings.get("render_backend"))
     try:
-        from utils.platform_utils import get_config_dir
-        import json
-        path = get_config_dir() / "settings.json"
-        if path.is_file():
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return normalize_render_backend(data.get("render_backend"))
+        return normalize_render_backend(_read_settings_file().get("render_backend"))
     except Exception as e:
         log.debug("Could not load render backend from settings: %s", e)
     return DEFAULT_RENDER_BACKEND
+
+
+def apply_language_from_settings(settings: dict | None = None) -> str:
+    """Apply the persisted UI language before the first dialog is shown.
+
+    main_window applies the language from its own settings object; this
+    covers dialogs shown before the window exists (e.g. single-instance).
+    Does not raise; falls back to the default language.
+    """
+    if not isinstance(settings, dict) or not settings.get("language"):
+        try:
+            settings = _read_settings_file()
+        except Exception as e:
+            log.debug("Could not load UI language from settings: %s", e)
+            settings = {}
+    return set_language(settings.get("language"))
+
+
+def acquire_single_instance_lock():
+    """Acquire the app-wide single-instance lock (QLockFile in the user config dir).
+
+    Returns the QLockFile that the caller must keep referenced for the
+    process lifetime, or None when another Socksicle instance already holds
+    it. QLockFile detects and removes lock files left by crashed instances.
+    """
+    from PySide6.QtCore import QLockFile
+
+    from utils.platform_utils import get_config_dir
+
+    lock = QLockFile(str(get_config_dir() / "single_instance.lock"))
+    if lock.tryLock(0):
+        log.info("Single-instance lock acquired: %s", lock.fileName())
+        return lock
+    log.warning("Second Socksicle instance refused: lock %s is already held", lock.fileName())
+    return None
 
 
 def apply_render_backend_from_settings(settings: dict | None = None) -> str:
@@ -733,6 +766,16 @@ def show_backend_missing(parent=None) -> None:
     msg.setText(tr("backend.missing_text"))
     msg.setInformativeText(tr("backend.howto")
                            + manual_install_instructions())
+    msg.setStandardButtons(QMessageBox.Ok)
+    msg.exec()
+
+
+def show_already_running(parent=None) -> None:
+    """Explain that a second Socksicle instance cannot start."""
+    msg = QMessageBox(parent) if parent else QMessageBox()
+    msg.setIcon(QMessageBox.Warning)
+    msg.setWindowTitle(tr("app.already_running_title"))
+    msg.setText(tr("app.already_running_text"))
     msg.setStandardButtons(QMessageBox.Ok)
     msg.exec()
 

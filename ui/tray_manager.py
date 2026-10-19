@@ -23,6 +23,7 @@ class TrayManager(QObject):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon(self.icon_path))
         self.tray_menu = QMenu()
+        self.apply_theme(self.theme)
 
         self.show_action = self.tray_menu.addAction(tr("tray.show_hide"))
         self.show_action.triggered.connect(self.showHideRequested)
@@ -106,3 +107,33 @@ class TrayManager(QObject):
 
     def hide(self):
         self.tray_icon.hide()
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        if not hasattr(self, "tray_menu") or not self.tray_menu:
+            return
+        surface_high = getattr(theme, "surface_container_high", "#241F32")
+        text_hex = getattr(theme, "on_surface", "#E6E0E9")
+        accent_hex = getattr(theme, "primary", "#D0BCFF")
+        self.tray_menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {surface_high};
+                color: {text_hex};
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 14px;
+                border-radius: 6px;
+            }}
+            QMenu::item:selected {{
+                background-color: {accent_hex}33;
+                color: {accent_hex};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: rgba(255, 255, 255, 0.08);
+                margin: 4px 6px;
+            }}
+        """)

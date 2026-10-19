@@ -21,11 +21,7 @@ def test_build_badge_texts_vless_reality():
     )
     compact, expanded = build_badge_texts(server)
     assert compact == "VLESS · Reality"
-    assert "VLESS" in expanded
-    assert "Reality" in expanded
-    assert "GRPC" in expanded
-    assert "Vision" in expanded
-    assert ":443" in expanded
+    assert expanded == "VLESS · GRPC · Reality · Vision · :443"
 
 
 def test_build_badge_texts_vless_tls():
@@ -39,7 +35,35 @@ def test_build_badge_texts_vless_tls():
     )
     compact, expanded = build_badge_texts(server)
     assert compact == "VLESS · TLS"
-    assert expanded == "VLESS · TLS · WS · :8443"
+    assert expanded == "VLESS · WS · TLS · :8443"
+
+
+def test_build_badge_texts_vless_tcp_xhttp_order():
+    server = Server(
+        name="XHTTP Node",
+        host="example.com",
+        port=443,
+        protocol=ProxyProtocol.VLESS,
+        security="tls",
+        transport="xhttp",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "VLESS · TLS"
+    assert expanded == "VLESS · XHTTP · TLS · :443"
+
+
+def test_build_badge_texts_vless_tcp_plain():
+    server = Server(
+        name="Plain VLESS",
+        host="example.com",
+        port=443,
+        protocol=ProxyProtocol.VLESS,
+        security="tls",
+        transport="tcp",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "VLESS · TLS"
+    assert expanded == "VLESS · TLS · TCP:443"
 
 
 def test_build_badge_texts_hysteria2():
@@ -51,8 +75,23 @@ def test_build_badge_texts_hysteria2():
         congestion_control="bbr",
     )
     compact, expanded = build_badge_texts(server)
+    # BBR is the HY2 default and not written; HY2 is QUIC over TLS 1.3.
     assert compact == "HY2"
-    assert expanded == "HY2 · BBR · UDP:443"
+    assert expanded == "HY2 · UDP:443"
+
+
+def test_build_badge_texts_hysteria2_obfs_and_cc():
+    server = Server(
+        name="HY2 Obfs",
+        host="hy2.example.com",
+        port=8443,
+        protocol=ProxyProtocol.HYSTERIA2,
+        congestion_control="cubic",
+        obfs="salamander",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "HY2"
+    assert expanded == "HY2 · SALAMANDER · CUBIC · UDP:8443"
 
 
 def test_build_badge_texts_shadowsocks():
@@ -65,7 +104,21 @@ def test_build_badge_texts_shadowsocks():
     )
     compact, expanded = build_badge_texts(server)
     assert compact == "SS"
-    assert expanded == "SS · aes-256-gcm · :8388"
+    assert expanded == "SS · aes-256-gcm · TCP:8388"
+
+
+def test_build_badge_texts_shadowsocks_plugin():
+    server = Server(
+        name="SS Quiet",
+        host="ss.example.com",
+        port=41080,
+        protocol=ProxyProtocol.SHADOWSOCKS,
+        method="chacha20-ietf-poly1305",
+        plugin="obfs-local;obfs=http;obfs-host=example.com",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "SS"
+    assert expanded == "SS · obfs-local · TCP:41080"
 
 
 def test_build_badge_texts_trojan():
@@ -78,7 +131,61 @@ def test_build_badge_texts_trojan():
     )
     compact, expanded = build_badge_texts(server)
     assert compact == "TROJAN"
-    assert expanded == "TROJAN · TLS · :443"
+    assert expanded == "TROJAN · TLS · TCP:443"
+
+
+def test_build_badge_texts_vmess_tls_ws():
+    server = Server(
+        name="VMess Node",
+        host="vm.example.com",
+        port=443,
+        protocol=ProxyProtocol.VMESS,
+        security="tls",
+        transport="ws",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "VMESS"
+    assert expanded == "VMESS · WS · TLS · :443"
+
+
+def test_build_badge_texts_vmess_plain_tcp():
+    server = Server(
+        name="VMess Plain",
+        host="vm.example.com",
+        port=10086,
+        protocol=ProxyProtocol.VMESS,
+        security="none",
+        transport="tcp",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "VMESS"
+    assert expanded == "VMESS · TCP:10086"
+
+
+def test_build_badge_texts_tuic_non_default_cc():
+    server = Server(
+        name="TUIC Node",
+        host="tuic.example.com",
+        port=8443,
+        protocol=ProxyProtocol.TUIC,
+        congestion_control="cubic",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "TUIC"
+    assert expanded == "TUIC · CUBIC · UDP:8443"
+
+
+def test_build_badge_texts_tuic_default_cc():
+    server = Server(
+        name="TUIC Node",
+        host="tuic.example.com",
+        port=8443,
+        protocol=ProxyProtocol.TUIC,
+        congestion_control="bbr",
+    )
+    compact, expanded = build_badge_texts(server)
+    assert compact == "TUIC"
+    assert expanded == "TUIC · UDP:8443"
 
 
 def test_config_tag_badge_toggle_expanded(qapp):

@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urlparse
 
-from .platform_utils import get_config_dir
+from .platform_utils import get_config_dir, get_socksicle_user_agent
 from .i18n import tr
 from . import twinsock
 
@@ -19,16 +19,23 @@ log = logging.getLogger(__name__)
 
 
 USER_AGENT_PRESETS = {
-    "socksicle": "Socksicle/1.0",
-    "happ": "Happ/4.0.5",
-    "hiddify": "HiddifyNext/2.5.7",
+    "socksicle": get_socksicle_user_agent(),
+    "sing-box": "sing-box/1.14.3",
+    "mihomo": "Mihomo/1.19.32",
+    "clash_verge": "ClashVerge/2.5.8",
+    "hiddify": "Hiddify/4.1.1",
+    "v2rayn": "v2rayN/7.25.6",
+    "flclash": "FlClash/0.9.1",
+    "karing": "karing/1.2.26",
+    "nekobox": "NekoBox/4.0.1",
+    "nekoray": "NekoRay/4.0.1",
+    "mihomo_party": "MihomoParty/1.5.0",
+    "v2rayng": "v2rayNG/2.3.11",
+    "happ": "Happ/4.6.0",
+    "clash": "Clash.Meta",
+    "shadowrocket": "Shadowrocket/2.2.0",
     "incy": "InCY/1.0.0",
-    "karing": "Karing/1.0.8",
-    "clash": "ClashForWindows/0.20.39",
     "curl": "curl/7.88.0",
-    "nekoray": "NekoBox/PC/2.1.0 (Prefer ClashMeta Format)",
-    "v2rayng": "v2rayNG/1.8.12",
-    "mihomo": "clash-meta",
     "shadowsocks": "ShadowsocksWindows/4.4.1.0",
     "chrome": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "firefox": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
@@ -104,6 +111,14 @@ def _extract_metadata(response):
     return meta
 
 
+# Decoded subscription body lines are filtered to schemes Server.from_link
+# can actually parse.
+_SUBSCRIPTION_LINK_SCHEMES = (
+    "ss://", "vless://", "vmess://", "hysteria2://", "hy2://",
+    "trojan://", "trojan-go://", "tuic://", "tws3://",
+)
+
+
 def _extract_description(headers, decoded_lines, announce, meta):
     """Derive a subscription description from headers or body preamble."""
     desc = meta.get('description')
@@ -115,7 +130,7 @@ def _extract_description(headers, decoded_lines, announce, meta):
     preamble = []
     for line in decoded_lines:
         line = line.strip()
-        if line.startswith(('ss://', 'vless://', 'vmess://', 'hysteria2://', 'hy2://')):
+        if line.startswith(_SUBSCRIPTION_LINK_SCHEMES):
             break
         if not line or line.startswith("base64:"):
             continue
@@ -320,7 +335,7 @@ def parse_subscription(url, settings=None):
     try:
         _require_public_url(url)
         ua_key = settings.get("user_agent_key", "socksicle")
-        user_agent = USER_AGENT_PRESETS.get(ua_key, USER_AGENT_PRESETS["socksicle"])
+        user_agent = USER_AGENT_PRESETS.get(ua_key, get_socksicle_user_agent())
 
         headers = {'User-Agent': user_agent}
 
@@ -365,10 +380,9 @@ def parse_subscription(url, settings=None):
                 meta['description'] = _extract_description(
                     headers, decoded_lines, meta.get('announce', ''), meta)
 
-            supported_prefixes = ('ss://', 'vless://', 'vmess://', 'hysteria2://', 'hy2://', 'tws3://')
             links = [
                 line.strip() for line in decoded_lines
-                if line.strip().startswith(supported_prefixes)
+                if line.strip().startswith(_SUBSCRIPTION_LINK_SCHEMES)
             ]
             if len(links) > MAX_SUBSCRIPTION_NODES:
                 raise _BlockedSubscription(

@@ -27,7 +27,7 @@ from ui.message_box_types import (
     resolve_theme,
 )
 from utils.i18n import tr
-from utils.window_utils import configure_window
+from utils.window_utils import configure_window, start_window_move
 
 log = logging.getLogger(__name__)
 
@@ -330,6 +330,9 @@ class MessageBox(QDialog):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and not isinstance(self.childAt(event.position().toPoint()), (QPushButton, QTextEdit)):
+            if start_window_move(self):
+                event.accept()
+                return
             self._dragging = True
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()

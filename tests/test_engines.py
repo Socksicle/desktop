@@ -476,7 +476,8 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
             host="1.2.3.4", port=8388, method="aes-256-gcm", password="pw"
         )
 
-    def test_start_tun_linux_success_when_capabilities_present(self):
+    def test_start_tun_linux_starts_after_grant_check(self):
+        """Engine consults grant_tun_capabilities once before starting TUN."""
         engine = SingBoxEngine()
         engine.tun_mode = True
         fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
@@ -484,8 +485,7 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
         with mock.patch("sys.platform", "linux"), \
              mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
-             mock.patch("utils.platform_utils.check_tun_capabilities", return_value=True) as check_cap, \
-             mock.patch("utils.platform_utils.grant_tun_capabilities") as grant_cap, \
+             mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=True) as grant_cap, \
               mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
               mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
              mock.patch("utils.engines.base.cleanup_stale_engines"), \
@@ -493,8 +493,7 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
              mock.patch("subprocess.Popen", return_value=fake_proc):
             ok = engine.start(self.server)
             self.assertTrue(ok)
-            check_cap.assert_called_with(self.bin_path)
-            grant_cap.assert_not_called()
+            grant_cap.assert_called_once_with(self.bin_path)
             engine.teardown()
 
     def test_start_tun_linux_grants_capabilities_when_missing(self):
@@ -502,12 +501,9 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
         engine.tun_mode = True
         fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
                               stdout=io.StringIO(""), stderr=io.StringIO(""))
-        # First check returns False, second check (after grant) returns True
-        cap_results = [False, True]
         with mock.patch("sys.platform", "linux"), \
              mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
-             mock.patch("utils.platform_utils.check_tun_capabilities", side_effect=cap_results) as check_cap, \
              mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=True) as grant_cap, \
               mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
               mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
@@ -527,7 +523,6 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
         with mock.patch("sys.platform", "linux"), \
              mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
-             mock.patch("utils.platform_utils.check_tun_capabilities", return_value=False), \
              mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=False) as grant_cap:
             ok = engine.start(self.server)
             self.assertFalse(ok)

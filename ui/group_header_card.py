@@ -1,7 +1,8 @@
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QPointF, QTimer, Signal
+from PySide6.QtGui import QIcon, QPainter, QPixmap
 
-from utils.icons import set_button_icon
+from utils.icons import pixmap, set_button_icon
 
 from .chevron_view import ChevronView
 from .elided_label import ElidedLabel
@@ -32,6 +33,11 @@ class GroupHeaderCard(QFrame):
         self._expanded = True
         self._refreshing = False
         self._refresh_base_subtitle = ""
+        self._refresh_pixmap: QPixmap | None = None
+        self._spin_angle = 0.0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(16)
+        self._spin_timer.timeout.connect(self._spin_tick)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 6, 0, 12)
@@ -118,16 +124,49 @@ class GroupHeaderCard(QFrame):
         self.btn_ping.setEnabled(not busy)
 
     def set_refreshing(self, refreshing: bool):
-        """Disable the refresh action and mark the card busy until updated."""
+        """Disable the refresh action, spin its icon, and mark the card busy."""
         self.btn_refresh.setEnabled(not refreshing)
         if refreshing:
             if not self._refreshing:
                 self._refresh_base_subtitle = self.sub_label.text()
             self._refreshing = True
+            if not self._spin_timer.isActive():
+                self._spin_angle = 0.0
+                self._spin_timer.start()
             self.set_subtitle(tr("group.refreshing"))
         elif self._refreshing:
             self._refreshing = False
+            self._spin_timer.stop()
+            self._spin_angle = 0.0
+            if self._refresh_pixmap is not None and not self._refresh_pixmap.isNull():
+                self.btn_refresh.setIcon(QIcon(self._refresh_pixmap))
             self.set_subtitle(self._refresh_base_subtitle)
+
+    def _spin_tick(self):
+        icon = self._rotated_refresh_icon(self._spin_angle)
+        self._spin_angle = (self._spin_angle + 4.0) % 360.0
+        if icon is not None:
+            self.btn_refresh.setIcon(icon)
+
+    def _rotated_refresh_icon(self, angle: float) -> QIcon | None:
+        """Render the refresh glyph rotated in place (no bounding-box growth)."""
+        base = self._refresh_pixmap
+        if base is None or base.isNull():
+            return None
+        pm = QPixmap(base.size())
+        pm.setDevicePixelRatio(base.devicePixelRatio())
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        try:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            dpr = base.devicePixelRatio()
+            w, h = base.width() / dpr, base.height() / dpr
+            painter.translate(w / 2.0, h / 2.0)
+            painter.rotate(angle)
+            painter.drawPixmap(QPointF(-w / 2.0, -h / 2.0), base)
+        finally:
+            painter.end()
+        return QIcon(pm)
 
     def set_expanded(self, expanded: bool):
         """Chevron points down when expanded, right when collapsed."""
@@ -206,3 +245,4 @@ class GroupHeaderCard(QFrame):
             btn.setStyleSheet(btn_style)
             set_button_icon(btn, btn.property("iconName"),
                             muted_hex, 18, btn.property("iconFallback") or "")
+        self._refresh_pixmap = pixmap("refresh", muted_hex, 18)

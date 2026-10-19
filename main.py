@@ -10,13 +10,16 @@ import logging
 import sys
 
 from utils.startup_utils import (  # noqa: E402
+    acquire_single_instance_lock,
     apply_high_dpi_policy,
+    apply_language_from_settings,
     apply_render_backend_from_settings,
     configure_pixmap_cache,
     desktop_file_name,
     find_usable_backend,
     initialize,
     install_native_handlers,
+    show_already_running,
     show_backend_missing,
 )
 from PySide6.QtCore import QTimer
@@ -75,19 +78,38 @@ def parse_args(argv=None):
         action="store_true",
         help="Start application minimized to system tray",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run the sing-box core with full debug logging",
+    )
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
     return args
 
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.debug:
+        from utils.engines import singbox_config
+        singbox_config.set_debug_logs(True)
     initialize()
     apply_high_dpi_policy()
     apply_render_backend_from_settings()
 
+    # Single-instance guard: refuse a second instance before it can race on
+    # local port binds, PID markers, or settings.json writes.
+    instance_lock = acquire_single_instance_lock()
+
     app = QApplication(sys.argv)
     app.setApplicationName("Socksicle")
     app.setDesktopFileName(desktop_file_name())
+
+    if instance_lock is None:
+        apply_language_from_settings()
+        show_already_running()
+        sys.exit(0)
+    app._instance_lock = instance_lock  # holds the lock until process exit
+
     configure_pixmap_cache()
     _apply_platform_style(app)
 

@@ -1,0 +1,43 @@
+// Socksicle: allow systemd-resolved DNS configuration of the sing-box TUN
+// interface without a password on every connect. sing-box sets link DNS via
+// resolvectl, which triggers polkit auth per call otherwise.
+//
+// The subject of these actions is resolvectl itself; after exec it holds no
+// capabilities (P' = P(inh) & F(inh) is empty — see capabilities(7)). The
+// sing-box core that spawned it keeps cap_net_admin in its permitted/effective
+// set (granted once via setcap), so authorization is based on the parent.
+polkit.addRule(function(action, subject) {
+    var allowed = {
+        "org.freedesktop.resolve1.set-dns-servers": true,
+        "org.freedesktop.resolve1.set-domains": true,
+        "org.freedesktop.resolve1.set-default-route": true,
+        "org.freedesktop.resolve1.revert": true
+    };
+    if (!allowed[action.id]) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    try {
+        var ppid_out = polkit.spawn(["/bin/ps", "-o", "ppid=", "-p",
+                                     String(subject.pid)]).toString().trim();
+        var ppid = parseInt(ppid_out, 10);
+        if (!ppid) {
+            return polkit.Result.NOT_HANDLED;
+        }
+        var status = polkit.spawn(["/bin/grep", "-E",
+            "^CapEff:|^CapPrm:",
+            "/proc/" + ppid + "/status"]).toString();
+        var caps = 0;
+        var re = /Cap(?:Eff|Prm):\s*([0-9a-fA-F]+)/g;
+        var m;
+        while ((m = re.exec(status)) !== null) {
+            caps |= parseInt(m[1], 16);
+        }
+        // CAP_NET_ADMIN = bit 12
+        if ((caps & 0x1000) !== 0) {
+            return polkit.Result.YES;
+        }
+    } catch (e) {
+        // Cannot inspect the caller: fail closed, keep the password prompt.
+    }
+    return polkit.Result.NOT_HANDLED;
+});

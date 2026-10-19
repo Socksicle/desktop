@@ -20,7 +20,7 @@ class BentoTelemetryCard(QFrame):
         self.theme = theme
         self._connected_start_time = None
         self._last_timer_text = "00:00:00"
-        self._show_flags = True
+        self._show_flags = False
         self._last_flag = ""
         self._last_country = ""
         self._timer = QTimer(self)

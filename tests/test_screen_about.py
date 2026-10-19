@@ -105,6 +105,33 @@ def test_blob_avatar_shuffle(qapp):
     assert 0 <= new_shape < BlobAvatarView.SHAPE_COUNT
 
 
+def test_blob_avatar_renders_tinted_glyph(qapp):
+    from PySide6.QtGui import QImage
+    from utils.icons import pixmap
+
+    theme_a = M3Theme(preset_key="lavender")
+    blob = BlobAvatarView(theme=theme_a)
+    blob.resize(112, 112)
+
+    # Verify glyph pixmap loads with the theme color
+    pm = pixmap("launcher_foreground", blob._color_on_accent.name(), 67)
+    assert pm is not None and not pm.isNull()
+
+    # Verify paint event executes cleanly
+    img = QImage(112, 112, QImage.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    blob.render(img)
+    assert not img.isNull()
+
+    # Verify dynamic color update on theme change
+    theme_b = M3Theme(preset_key="coral")
+    blob.apply_theme(theme_b)
+    assert blob._color_on_accent.name().lower() == theme_b.on_primary.lower()
+    assert blob._color_accent.name().lower() == theme_b.primary.lower()
+    pm_b = pixmap("launcher_foreground", blob._color_on_accent.name(), 67)
+    assert pm_b is not None and not pm_b.isNull()
+
+
 def test_legal_dialog_and_text(qapp):
     from ui.message_box import MessageBox
     from utils.i18n import set_language

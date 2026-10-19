@@ -3,11 +3,15 @@
 Centralizes config paths, binary discovery, logging, and Windows-specific
 utilities so the UI layer stays clean and Windows-safe.
 """
-import os
-import sys
-import subprocess
+import functools
+import hashlib
 import logging
+import os
 import platform
+import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -29,6 +33,36 @@ def is_windows() -> bool:
 
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
+
+
+@functools.lru_cache(maxsize=1)
+def get_real_app_version() -> str:
+    """Retrieve actual application version from pyproject.toml or package metadata."""
+    base_ver = "0.1-rc.1"
+    try:
+        toml_path = get_app_dir() / "pyproject.toml"
+        if toml_path.is_file():
+            content = toml_path.read_text(encoding="utf-8")
+            m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
+            if m:
+                return m.group(1)
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        log.debug("App version from pyproject.toml unavailable: %s", e)
+
+    try:
+        from importlib.metadata import version
+        return version('socksicle')
+    except (ImportError, AttributeError, ValueError, Exception) as e:
+        log.debug("App version from package metadata unavailable: %s", e)
+
+    return base_ver
+
+
+def get_socksicle_user_agent() -> str:
+    """Return canonical Socksicle user agent: socksicle/{version}/{os}."""
+    ver = get_real_app_version()
+    os_name = "windows" if is_windows() else ("linux" if is_linux() else sys.platform.lower())
+    return f"socksicle/{ver}/{os_name}"
 
 
 def get_config_dir() -> Path:
@@ -157,10 +191,87 @@ def check_tun_capabilities(binary_path: str | Path | None) -> bool:
         return False
 
 
-def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -> bool:
-    """Grant cap_net_admin,cap_net_bind_service+ep to binary via pkexec setcap.
+_TUN_CAPS_MASK = "cap_net_admin,cap_net_bind_service+eip"
+# The inheritable (+i) bit is required: sing-box forks helper processes (e.g.
+# the resolvectl calls that configure TUN link DNS) and caps granted without
+# `+i` are dropped at exec, so children run unprivileged.
+_TUN_RULE_DEST = "/etc/polkit-1/rules.d/20-socksicle-tun.rules"
+_TUN_RULE_REL = Path("data") / "polkit" / "20-socksicle-tun.rules"
 
-    Returns True if capability was successfully granted, False otherwise.
+
+def _tun_rule_source() -> Path | None:
+    candidate = get_app_dir() / _TUN_RULE_REL
+    return candidate if candidate.is_file() else None
+
+
+def _tun_rule_in_sync() -> bool:
+    """Whether the installed polkit rule matches the bundled one.
+
+    A bundled source that is missing counts as synced: nothing to install
+    (packaged setups may ship the rule via the distribution instead).
+    Hardened distros keep /etc/polkit-1/rules.d root-only readable
+    (drwxr-x--- root polkitd), so an unreadable destination falls back to
+    the marker written right after pkexec confirmed the install.
+    """
+    src = _tun_rule_source()
+    if src is None:
+        return True
+    try:
+        src_bytes = src.read_bytes()
+    except OSError as e:
+        log.debug("TUN rule source unreadable: %s", e)
+        return False
+    try:
+        return Path(_TUN_RULE_DEST).read_bytes() == src_bytes
+    except OSError:
+        try:
+            marker = _rule_marker_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        return marker == hashlib.sha256(src_bytes).hexdigest()
+
+
+def _rule_marker_path() -> Path:
+    return get_config_dir() / "tun_polkit_rule.marker"
+
+
+def _write_rule_marker(src: Path) -> None:
+    try:
+        marker = _rule_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(hashlib.sha256(src.read_bytes()).hexdigest(),
+                          encoding="utf-8")
+    except OSError as e:
+        log.debug("TUN rule marker write skipped: %s", e)
+
+
+def _systemd_resolved_active() -> bool:
+    """Whether systemd-resolved is running (its link DNS setup is polkit-gated)."""
+    import shutil
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False
+    try:
+        proc = subprocess.run(
+            [systemctl, "is-active", "--quiet", "systemd-resolved"],
+            capture_output=True,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError) as e:
+        log.debug("systemd-resolved check failed: %s", e)
+        return False
+
+
+def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -> bool:
+    """Grant TUN privileges to the sing-box binary via a single Polkit prompt.
+
+    Sets file capabilities ``cap_net_admin,cap_net_bind_service+eip`` (the
+    inheritable bit keeps the privileges alive in processes sing-box forks)
+    and, when systemd-resolved is running, installs a Polkit rule that lets
+    its resolvectl configure the TUN link without a password on every connect.
+    Silent no-op (no prompt) when both are already in place.
+    Returns True when the binary is ready for TUN mode, False otherwise.
     """
     if not is_linux() or binary_path is None:
         return False
@@ -170,6 +281,7 @@ def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -
         return False
 
     import shutil
+
     pkexec_bin = shutil.which("pkexec")
     if not pkexec_bin:
         for candidate in ("/usr/bin/pkexec", "/bin/pkexec"):
@@ -180,6 +292,11 @@ def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -
         log.warning("grant_tun_capabilities: pkexec not found")
         return False
 
+    caps_ok = check_tun_capabilities(path)
+    rule_needed = _systemd_resolved_active() and not _tun_rule_in_sync()
+    if caps_ok and not rule_needed:
+        return True
+
     setcap_bin = shutil.which("setcap")
     if not setcap_bin:
         for candidate in ("/sbin/setcap", "/usr/sbin/setcap", "/usr/bin/setcap"):
@@ -189,8 +306,20 @@ def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -
     if not setcap_bin:
         setcap_bin = "setcap"
 
-    cmd = [pkexec_bin, setcap_bin, "cap_net_admin,cap_net_bind_service+ep", str(path)]
-    log.info("Requesting TUN capabilities via Polkit: %s", " ".join(cmd))
+    script = f"setcap {shlex.quote(_TUN_CAPS_MASK)} {shlex.quote(str(path))}"
+    rule_src = _tun_rule_source() if rule_needed else None
+    if rule_needed:
+        if rule_src is None:
+            # Very unlikely race: the bundled rule existed when the check ran
+            # but is gone now. Still set the caps; the password prompts for
+            # DNS setup remain until the rule is installed.
+            log.warning("TUN polkit rule source vanished; installing caps only")
+        else:
+            script += (f" && install -m 0644 {shlex.quote(str(rule_src))}"
+                       f" {shlex.quote(_TUN_RULE_DEST)}")
+
+    cmd = [pkexec_bin, "/bin/sh", "-c", script]
+    log.info("Requesting TUN privileges via Polkit: %s", " ".join(cmd))
     try:
         proc = subprocess.run(
             cmd,
@@ -198,17 +327,20 @@ def grant_tun_capabilities(binary_path: str | Path | None, parent_window=None) -
             text=True,
             timeout=60,
         )
-        if proc.returncode == 0:
-            log.info("Successfully executed pkexec setcap for %s", path)
-            if check_tun_capabilities(path):
-                return True
-            if not _find_getcap():
-                return True
+        if proc.returncode != 0:
+            log.warning("pkexec grant failed with code %d: %s",
+                        proc.returncode, (proc.stderr or "").strip())
             return False
-        log.warning("pkexec setcap failed with code %d: %s", proc.returncode, (proc.stderr or "").strip())
-        return False
+        log.info("Successfully granted TUN privileges for %s", path)
+        if rule_src is not None:
+            _write_rule_marker(rule_src)
+            if not _tun_rule_in_sync():
+                return False
+        if not caps_ok and check_tun_capabilities(path):
+            return True
+        return rule_needed or not _find_getcap()
     except subprocess.TimeoutExpired:
-        log.warning("pkexec setcap timed out")
+        log.warning("pkexec grant timed out")
         return False
     except (OSError, subprocess.SubprocessError) as e:
         log.warning("grant_tun_capabilities failed: %s", e)

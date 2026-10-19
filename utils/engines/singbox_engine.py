@@ -269,16 +269,15 @@ class SingBoxEngine(ProxyEngine):
                 self.statusChanged.emit(tr("tun.failed_prefix").format(reason=reason), True)
                 return False
             if sys.platform.startswith("linux"):
-                from ..platform_utils import check_tun_capabilities, grant_tun_capabilities
+                # Grant is a silent no-op when capabilities and the Polkit
+                # rule are already in place; otherwise it prompts once.
+                from ..platform_utils import grant_tun_capabilities
                 binary = self.find_binary()
-                if binary and not check_tun_capabilities(binary):
-                    log.info("sing-box binary lacks TUN capabilities; requesting grant...")
-                    granted = grant_tun_capabilities(binary)
-                    if not granted or not check_tun_capabilities(binary):
-                        reason = tr("tun.no_caps")
-                        log.error("TUN start blocked: %s", reason)
-                        self.statusChanged.emit(tr("tun.failed_prefix").format(reason=reason), True)
-                        return False
+                if binary and not grant_tun_capabilities(binary):
+                    reason = tr("tun.no_caps")
+                    log.error("TUN start blocked: %s", reason)
+                    self.statusChanged.emit(tr("tun.failed_prefix").format(reason=reason), True)
+                    return False
         return super().start(server)
 
     def teardown(self):

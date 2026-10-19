@@ -8,7 +8,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtCore import Qt
 
 from utils.icons import set_button_icon as _set_btn_icon
-from utils.window_utils import configure_window
+from utils.window_utils import configure_window, start_window_move
 from utils.i18n import tr
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
@@ -166,6 +166,8 @@ class ConnectionLogDialog(QDialog):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and e.position().y() < 60:
+            if start_window_move(self):
+                return
             self._dragging = True
             self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 

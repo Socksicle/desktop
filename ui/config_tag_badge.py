@@ -11,86 +11,114 @@ from PySide6.QtWidgets import QWidget
 from .anim_utils import fluid_easing
 
 
+_TCP_LIKE = ("", "tcp", "none")
+
+
+def _security_label(security: str) -> str:
+    return "Reality" if security == "reality" else ("TLS" if security == "tls" else "")
+
+
 def build_badge_texts(server) -> Tuple[str, str]:
-    """Return (compact_text, expanded_text) for a server configuration."""
+    """Return (compact_text, expanded_text) for a server configuration.
+
+    Expanded segments follow the config chain:
+    PROTOCOL · TRANSPORT (non-tcp) · TLS/Reality · extras · ADDR:PORT.
+    """
     if not server:
         return "", ""
 
     proto = getattr(server, "protocol", None)
     proto_val = getattr(proto, "value", str(proto or "")).lower()
-    port_suffix = f":{server.port}" if getattr(server, "port", None) else ""
+    port = getattr(server, "port", None)
 
     if proto_val == "vless":
-        sec = (getattr(server, "security", "") or "none").lower()
+        security = (getattr(server, "security", "") or "none").lower()
         transport = (getattr(server, "transport", "") or "tcp").lower()
         flow = (getattr(server, "flow", "") or "").lower()
-
-        sec_label = "Reality" if sec == "reality" else ("TLS" if sec == "tls" else "")
-        compact = f"VLESS · {sec_label}" if sec_label else "VLESS"
+        tcp_like = transport in _TCP_LIKE
 
         exp = ["VLESS"]
+        if not tcp_like:
+            exp.append(transport.upper())
+        sec_label = _security_label(security)
         if sec_label:
             exp.append(sec_label)
-        if transport and transport != "tcp":
-            exp.append(transport.upper())
         if "vision" in flow:
             exp.append("Vision")
-        if port_suffix:
-            exp.append(port_suffix)
+        if port:
+            exp.append(f"TCP:{port}" if tcp_like else f":{port}")
+        compact = f"VLESS · {sec_label}" if sec_label else "VLESS"
         return compact, " · ".join(exp)
 
     if proto_val == "vmess":
-        sec = (getattr(server, "security", "") or "none").lower()
+        security = (getattr(server, "security", "") or "none").lower()
         transport = (getattr(server, "transport", "") or "tcp").lower()
+        cipher = (getattr(server, "vmess_security", "") or "").lower()
+        tcp_like = transport in _TCP_LIKE
+
         exp = ["VMESS"]
-        if sec in ("tls", "reality"):
-            exp.append(sec.upper())
-        if transport and transport != "tcp":
+        if not tcp_like:
             exp.append(transport.upper())
-        if port_suffix:
-            exp.append(port_suffix)
+        sec_label = _security_label(security)
+        if sec_label:
+            exp.append(sec_label)
+        if cipher and cipher != "auto":
+            exp.append(cipher.upper())
+        if port:
+            exp.append(f"TCP:{port}" if tcp_like else f":{port}")
         return "VMESS", " · ".join(exp)
 
-    if proto_val in ("hysteria2", "hy2"):
-        exp = ["HY2"]
-        cc = getattr(server, "congestion_control", "")
-        if cc:
-            exp.append(cc.upper())
-        if port_suffix:
-            exp.append(f"UDP{port_suffix}")
-        return "HY2", " · ".join(exp)
-
     if proto_val == "trojan":
+        security = (getattr(server, "security", "") or "tls").lower()
+        transport = (getattr(server, "transport", "") or "tcp").lower()
+        tcp_like = transport in _TCP_LIKE
+
         exp = ["TROJAN"]
-        sec = (getattr(server, "security", "") or "tls").upper()
-        if sec:
-            exp.append(sec)
-        if port_suffix:
-            exp.append(port_suffix)
+        if not tcp_like:
+            exp.append(transport.upper())
+        sec_label = _security_label(security)
+        if sec_label:
+            exp.append(sec_label)
+        if port:
+            exp.append(f"TCP:{port}" if tcp_like else f":{port}")
         return "TROJAN", " · ".join(exp)
 
-    if proto_val == "tuic":
-        exp = ["TUIC"]
-        cc = getattr(server, "congestion_control", "")
-        if cc:
+    if proto_val in ("hysteria2", "hy2"):
+        obfs = (getattr(server, "obfs", "") or "").lower()
+        cc = (getattr(server, "congestion_control", "bbr") or "").lower()
+
+        exp = ["HY2"]
+        if obfs:
+            exp.append(obfs.upper())
+        if cc and cc != "bbr":
             exp.append(cc.upper())
-        if port_suffix:
-            exp.append(f"UDP{port_suffix}")
+        if port:
+            exp.append(f"UDP:{port}")
+        return "HY2", " · ".join(exp)
+
+    if proto_val == "tuic":
+        cc = (getattr(server, "congestion_control", "bbr") or "").lower()
+
+        exp = ["TUIC"]
+        if cc and cc != "bbr":
+            exp.append(cc.upper())
+        if port:
+            exp.append(f"UDP:{port}")
         return "TUIC", " · ".join(exp)
 
-    # Shadowsocks and legacy protocols
-    plugin = getattr(server, "plugin", "")
-    method = getattr(server, "method", "")
-    if plugin:
-        plugin_clean = plugin.split("/")[-1].replace(".exe", "")
-        exp = ["SS", plugin_clean]
-    elif method:
-        exp = ["SS", method]
-    else:
-        exp = ["SS"]
+    # Shadowsocks: always TCP; distinguishing modules are the SIP003 plugin
+    # and the cipher method (canonical lowercase, as it appears in links).
+    plugin_raw = (getattr(server, "plugin", "") or "").strip()
+    method = (getattr(server, "method", "") or "").strip()
 
-    if port_suffix:
-        exp.append(port_suffix)
+    exp = ["SS"]
+    if plugin_raw:
+        plugin_name = plugin_raw.split(";")[0].replace("\\", "/").split("/")[-1].replace(".exe", "")
+        exp.append(plugin_name)
+    elif method:
+        exp.append(method)
+    if port:
+        exp.append(f"TCP:{port}")
     return "SS", " · ".join(exp)
 
 

@@ -232,6 +232,20 @@ class LinuxDBusFilterTest(unittest.TestCase):
         self.assertTrue(filter_._login1_connected)
         self.assertTrue(filter_._nm_connected)
         self.assertEqual(self.fake_bus.connect.call_count, 2)
+        login1_call, nm_call = self.fake_bus.connect.call_args_list
+        # PySide6 QtDBus only accepts receiver + SLOT("name(type)") bytes.
+        self.assertEqual(
+            login1_call.args,
+            (startup_utils.LOGIN1_SERVICE, startup_utils.LOGIN1_PATH,
+             startup_utils.LOGIN1_INTERFACE, startup_utils.LOGIN1_SIGNAL_PREPARE_FOR_SLEEP,
+             filter_, "1handle_prepare_for_sleep(bool)"),
+        )
+        self.assertEqual(
+            nm_call.args,
+            (startup_utils.NM_SERVICE, startup_utils.NM_PATH,
+             startup_utils.NM_INTERFACE, startup_utils.NM_SIGNAL_STATE_CHANGED,
+             filter_, "1handle_nm_state_changed(int)"),
+        )
 
     def test_prepare_for_sleep_true_sets_sleeping_flag(self):
         filter_ = startup_utils.LinuxDBusPowerNetworkFilter(
@@ -327,6 +341,9 @@ class LinuxDBusFilterTest(unittest.TestCase):
         filter_.disconnect_signals()
         self.assertFalse(filter_.is_connected)
         self.assertEqual(self.fake_bus.disconnect.call_count, 2)
+        login1_call, nm_call = self.fake_bus.disconnect.call_args_list
+        self.assertEqual(login1_call.args[5], "1handle_prepare_for_sleep(bool)")
+        self.assertEqual(nm_call.args[5], "1handle_nm_state_changed(int)")
 
 
 class ExcepthookTest(unittest.TestCase):
