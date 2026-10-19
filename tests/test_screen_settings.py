@@ -8,6 +8,7 @@ from ui.server_item import ServerItem
 from ui.server_list_panel import ServerListPanel
 from utils.theme import M3Theme
 from utils.server_model import Server, ProxyProtocol
+from utils.i18n import SUPPORTED_LANGUAGES
 
 
 @pytest.fixture(autouse=True)
@@ -246,7 +247,7 @@ def test_language_lives_in_appearance_section():
     assert screen.lang_combo is None
     screen.open_section("appearance", "Appearance")
     assert screen.lang_combo is not None
-    assert screen.lang_combo.count() == 2
+    assert screen.lang_combo.count() == len(SUPPORTED_LANGUAGES)
 
 
 def test_hy2_insecure_toggle_in_connection_section():

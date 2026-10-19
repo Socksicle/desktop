@@ -4,6 +4,7 @@ All platform detection and subprocess activity is mocked; nothing is executed.
 """
 import hashlib
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -193,7 +194,8 @@ class LinuxGrantTunCapabilitiesTest(unittest.TestCase):
             self.assertTrue(res)
             run_mock.assert_called_once_with(
                 ["/usr/bin/pkexec", "/bin/sh", "-c",
-                 "setcap cap_net_admin,cap_net_bind_service+eip /path/to/sing-box"],
+                 "setcap cap_net_admin,cap_net_bind_service+eip "
+                 f"{shlex.quote(str(Path(bin_path)))}"],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -211,19 +213,20 @@ class LinuxGrantTunCapabilitiesTest(unittest.TestCase):
 
     def test_grant_tun_capabilities_installs_polkit_rule_for_resolved(self):
         fake_run = mock.Mock(returncode=0, stdout="", stderr="")
+        rule_src = Path("/fake/data/polkit/20-socksicle-tun.rules")
         with mock.patch("pathlib.Path.is_file", return_value=True), \
              mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              mock.patch("subprocess.run", return_value=fake_run) as run_mock, \
              mock.patch("utils.platform_utils.check_tun_capabilities", return_value=True), \
              mock.patch("utils.platform_utils._systemd_resolved_active", return_value=True), \
              mock.patch("utils.platform_utils._tun_rule_source",
-                        return_value=Path("/fake/data/polkit/20-socksicle-tun.rules")), \
+                        return_value=rule_src), \
              mock.patch("utils.platform_utils._tun_rule_in_sync",
                         side_effect=[False, True]):
             res = platform_utils.grant_tun_capabilities("/path/to/sing-box")
             self.assertTrue(res)
             script = run_mock.call_args[0][0][3]
-            self.assertIn("install -m 0644 /fake/data/polkit/20-socksicle-tun.rules",
+            self.assertIn(f"install -m 0644 {shlex.quote(str(rule_src))}",
                           script)
             self.assertIn("/etc/polkit-1/rules.d/20-socksicle-tun.rules", script)
 

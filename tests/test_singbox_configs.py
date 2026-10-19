@@ -759,7 +759,7 @@ class SingBoxTunConfigTest(unittest.TestCase):
             self.assertFalse(tun_in["strict_route"])
             self.assertEqual(tun_in["stack"], "system")
             self.assertNotIn("auto_redirect", tun_in)
-            rest = config["route"]["rules"]
+            rest = config["route"]["rules"][2:]
         self.assertEqual(rest[0]["port"], 123)
         self.assertEqual(rest[1]["ip_cidr"], ["1.2.3.4/32"])
         self.assertEqual(rest[2]["ip_is_private"], True)

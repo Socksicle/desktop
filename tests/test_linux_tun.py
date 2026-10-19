@@ -20,6 +20,8 @@ def _make_getcap_output(caps):
 
 class TestCapabilities:
     def test_all_required_caps_pass(self, monkeypatch):
+        monkeypatch.setattr(linux_tun, "_which",
+                            lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(linux_tun.subprocess, "run",
                             _make_getcap_output(
                                 "cap_net_admin=ep cap_net_raw=ep "
@@ -27,6 +29,8 @@ class TestCapabilities:
         assert linux_tun.has_tun_capabilities("/usr/bin/sing-box") is True
 
     def test_missing_cap_fails(self, monkeypatch):
+        monkeypatch.setattr(linux_tun, "_which",
+                            lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(linux_tun.subprocess, "run",
                             _make_getcap_output(
                                 "cap_net_admin=ep cap_net_bind_service=ep"))
@@ -36,8 +40,10 @@ class TestCapabilities:
         assert linux_tun.has_tun_capabilities("/no/such/path") is False
         assert not linux_tun.grant_tun_capabilities("/no/such/path")
 
-    def test_grant_calls_pkexec_setcap(self, monkeypatch):
+    def test_grant_calls_pkexec_setcap(self, monkeypatch, tmp_path):
         calls = []
+        binary = tmp_path / "sing-box"
+        binary.write_text("")
 
         def fake_run(cmd, *a, **kwargs):
             calls.append(cmd)
@@ -49,19 +55,22 @@ class TestCapabilities:
         monkeypatch.setattr(linux_tun.subprocess, "run", fake_run)
         monkeypatch.setattr(linux_tun, "_which",
                             lambda name: f"/usr/bin/{name}")
-        assert linux_tun.grant_tun_capabilities("/usr/bin/sing-box") is True
+        assert linux_tun.grant_tun_capabilities(binary) is True
         grant = [c for c in calls if os.path.basename(c[0]) == "pkexec"][0]
         assert os.path.basename(grant[1]) == "setcap"
         assert grant[2] == "cap_net_admin,cap_net_raw,cap_net_bind_service+eip"
 
-    def test_grant_rejects_when_pkexec_fails(self, monkeypatch):
+    def test_grant_rejects_when_pkexec_fails(self, monkeypatch, tmp_path):
+        binary = tmp_path / "sing-box"
+        binary.write_text("")
+
         def fake_run(cmd, *a, **kwargs):
             code = 1 if os.path.basename(cmd[0]) == "getcap" else 2
             return subprocess.CompletedProcess(cmd, code, stdout="", stderr="")
         monkeypatch.setattr(linux_tun.subprocess, "run", fake_run)
         monkeypatch.setattr(linux_tun, "_which",
                             lambda name: f"/usr/bin/{name}")
-        assert linux_tun.grant_tun_capabilities("/usr/bin/sing-box") is False
+        assert linux_tun.grant_tun_capabilities(binary) is False
 
 
 class TestPreMatchRules:
@@ -155,6 +164,7 @@ class TestBuildConfig:
 
 
 class TestWriteConfig:
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
     def test_owner_only_permissions(self, tmp_path):
         path = linux_tun.write_config({"a": 1}, tmp_path)
         assert path.name == "socksicle-linux-tun.json"
@@ -213,9 +223,10 @@ class TestControlAPI:
 
 class TestDaemon:
     def _daemon(self, tmp_path):
-        (tmp_path / "sing-box").write_text("")
+        binary = tmp_path / "sing-box"
+        binary.write_text("")
         config = linux_tun.write_config({"log": {}}, tmp_path)
-        return linux_tun.SingBoxDaemon("/usr/bin/sing-box", config, tmp_path)
+        return linux_tun.SingBoxDaemon(binary, config, tmp_path)
 
     def test_rootless_start_uses_unshare(self, tmp_path):
         daemon = self._daemon(tmp_path)
@@ -224,6 +235,8 @@ class TestDaemon:
         with mock.patch.object(linux_tun.subprocess, "run",
                                return_value=check) as run, \
                 mock.patch.object(linux_tun.subprocess, "Popen", popen), \
+                mock.patch.object(linux_tun, "_which",
+                                  side_effect=lambda name: f"/usr/bin/{name}"), \
                 mock.patch.object(linux_tun, "grant_tun_capabilities",
                                   side_effect=AssertionError(
                                       "caps must not be needed in rootless")):

@@ -154,6 +154,7 @@ def test_m3_scroll_area_styling_and_direction(qapp):
     from ui.m3_scroll_area import M3ScrollArea, get_m3_scrollbar_stylesheet
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QWidget
 
     qss = get_m3_scrollbar_stylesheet()
@@ -175,6 +176,7 @@ def test_m3_scroll_area_styling_and_direction(qapp):
     # By default (invert_scroll=False), wheel down (delta -120) increases value (scrolls down)
     ev = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
     scroll.wheelEvent(ev)
+    QTest.qWait(300)  # wheel scrolling is animated (140 ms)
     val_normal = bar.value()
     assert val_normal > 0
 
@@ -183,6 +185,7 @@ def test_m3_scroll_area_styling_and_direction(qapp):
     scroll.set_invert_scroll(True)
     ev_up = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
     scroll.wheelEvent(ev_up)
+    QTest.qWait(300)
     assert bar.value() > 0
 
 
