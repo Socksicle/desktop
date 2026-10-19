@@ -258,6 +258,7 @@ class MessageBox(QDialog):
             self._button_roles.pop(btn, None)
             if self._default_button == btn:
                 self._default_button = None
+            btn.setParent(None)
             btn.deleteLater()
             self._update_geometry()
 

@@ -91,6 +91,7 @@ def test_message_box_custom_buttons(qapp, theme):
 
     dlg.removeButton(custom_btn)
     assert custom_btn not in dlg._buttons
+    assert custom_btn.parent() is None
 
 
 def test_message_box_default_button(qapp, theme):
