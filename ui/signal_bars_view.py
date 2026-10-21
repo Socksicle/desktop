@@ -15,7 +15,7 @@ class SignalBarsView(QWidget):
         self.theme = theme
         self._level = 0
         self._last_ms = None
-        self._active_color = QColor("#4CAF50")
+        self._active_color = QColor(getattr(theme, "primary", "#D0BCFF") if theme else "#D0BCFF")
         self._inactive_color = QColor(147, 143, 153, 70)
         self.setFixedHeight(14)
         self.setFixedWidth(28)
@@ -53,7 +53,7 @@ class SignalBarsView(QWidget):
     def set_latency(self, ms: float | None):
         self._last_ms = ms
         theme = self.theme
-        ok_color = getattr(theme, "success", "#4CAF50") if theme else "#4CAF50"
+        ok_color = getattr(theme, "primary", "#D0BCFF") if theme else "#D0BCFF"
         warn_color = getattr(theme, "warning", "#FFC107") if theme else "#FFC107"
         err_color = getattr(theme, "error", "#F44336") if theme else "#F44336"
         muted_color = getattr(theme, "outline", "#938F99") if theme else "#938F99"

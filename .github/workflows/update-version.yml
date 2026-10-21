@@ -1,0 +1,80 @@
+name: Update Version on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]+.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string (e.g. 0.1.2)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    name: Sync Version Across Readmes & pyproject.toml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve Version from Tag
+        id: resolve
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [[ "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="0.1.1"
+          fi
+          echo "Version: $VER"
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: Update pyproject.toml and READMEs
+        run: |
+          python -c '
+          import re, sys
+          ver = sys.argv[1]
+
+          # Update pyproject.toml
+          with open("pyproject.toml", "r", encoding="utf-8") as f:
+              c = f.read()
+          c = re.sub(r"version\s*=\s*[\x22\x27][^\x22\x27]+[\x22\x27]", f"version = \"{ver}\"", c, count=1)
+          with open("pyproject.toml", "w", encoding="utf-8") as f:
+              f.write(c)
+
+          # Update README files
+          patterns = [
+              ("README.md", r"(\*\*Status:\*\* Early development \(`)[^`]+(`\))"),
+              ("README_ru.md", r"(\*\*Статус:\*\* Ранняя разработка \(`)[^`]+(`\))"),
+              ("README_zh.md", r"(\*\*状态：\*\* 早期开发阶段（`)[^`]+(`）)")
+          ]
+          for fname, pat in patterns:
+              with open(fname, "r", encoding="utf-8") as f:
+                  c = f.read()
+              c = re.sub(pat, rf"\g<1>{ver}\g<2>", c, count=1)
+              with open(fname, "w", encoding="utf-8") as f:
+                  f.write(c)
+          ' "${{ steps.resolve.outputs.version }}"
+
+      - name: Commit and push changes to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml README.md README_ru.md README_zh.md
+          if git diff --cached --quiet; then
+            echo "No version changes detected."
+          else
+            git commit -m "chore(release): bump version to ${{ steps.resolve.outputs.version }} [skip ci]"
+            git push origin main
+          fi

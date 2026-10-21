@@ -158,6 +158,56 @@ def _build_node_outbound(server, hy2_insecure: bool) -> dict:
     return builder(server)
 
 
+MUX_PROTOCOLS = ("h2mux", "smux", "yamux")
+MUX_DEFAULT_PROTOCOL = "h2mux"
+MUX_MAX_CONNECTIONS_DEFAULT = 4
+MUX_MAX_CONNECTIONS_LIMIT = 16
+_MUX_OUTBOUND_TYPES = ("shadowsocks", "vless", "vmess", "trojan")
+
+
+def _build_mux_block(enabled: bool, protocol: str, max_connections) -> dict | None:
+    """Validate and build the shared ``multiplex`` block, or None when off."""
+    if not enabled:
+        return None
+    name = (protocol or MUX_DEFAULT_PROTOCOL).strip().lower()
+    if name not in MUX_PROTOCOLS:
+        raise ValueError(f"unsupported mux protocol: {protocol}")
+    if isinstance(max_connections, bool):
+        raise ValueError(f"invalid mux max connections: {max_connections}")
+    try:
+        limit = int(max_connections)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"invalid mux max connections: {max_connections}") from None
+    if not 1 <= limit <= MUX_MAX_CONNECTIONS_LIMIT:
+        raise ValueError(f"invalid mux max connections: {max_connections}")
+    return {
+        "enabled": True,
+        "protocol": name,
+        "max_connections": limit,
+        "padding": False,
+    }
+
+
+def _apply_tunnel_options(outbound: dict, tls_fragment: bool,
+                          mux: dict | None) -> None:
+    """Attach TLS fragmentation and multiplexing to one node outbound."""
+    if tls_fragment:
+        tls = outbound.get("tls")
+        if isinstance(tls, dict):
+            # sing-box 1.12+ TLS options: upstream keys only. The size/sleep
+            # object used by the Android fork is not part of the stock schema.
+            tls["fragment"] = True
+            tls["record_fragment"] = True
+            tls["fragment_fallback_delay"] = "500ms"
+    if mux is None or outbound.get("type") not in _MUX_OUTBOUND_TYPES:
+        return
+    # XTLS Vision owns the stream layout, so mux cannot be combined with flow.
+    if outbound.get("type") == "vless" and outbound.get("flow"):
+        return
+    outbound["multiplex"] = dict(mux)
+
+
 def _generate_config(
     server,
     local_port,
@@ -169,6 +219,10 @@ def _generate_config(
     api_port: int | None = None,
     api_secret: str | None = None,
     server_tag_map_out: dict | None = None,
+    tls_fragment: bool = False,
+    mux_enabled: bool = False,
+    mux_protocol: str = MUX_DEFAULT_PROTOCOL,
+    mux_max_connections: int = MUX_MAX_CONNECTIONS_DEFAULT,
 ) -> dict:
     """Generate a sing-box 1.14 JSON config.
 
@@ -176,6 +230,7 @@ def _generate_config(
     built so the active node can be hot-switched without restarting the
     tunnel or tearing down the TUN adapter.
     """
+    mux_block = _build_mux_block(mux_enabled, mux_protocol, mux_max_connections)
     if available_servers:
         candidates = list(available_servers)
         active_id = server_identity(server)
@@ -211,6 +266,7 @@ def _generate_config(
                       getattr(candidate, "name", ""), e)
             continue
 
+        _apply_tunnel_options(outbound, tls_fragment, mux_block)
         node_tag = f"node_{len(server_outbounds)}"
         outbound["tag"] = node_tag
         outbound["domain_resolver"] = "local-dns"
@@ -302,7 +358,7 @@ def _generate_config(
                 "dns_mode": "hijack",
                 "auto_route": True,
                 "strict_route": False,
-                "stack": "system",
+                "stack": "mixed",
             }
             if server_ip_cidrs:
                 # Keep direct connections to the proxy endpoints outside the tunnel.

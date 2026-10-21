@@ -3,6 +3,7 @@ import threading
 
 import pytest
 from PySide6.QtCore import QRunnable, QThreadPool
+from PySide6.QtWidgets import QWidget
 
 import ui.server_list_panel as panel_mod
 from ui.server_list_panel import ServerListPanel
@@ -242,3 +243,37 @@ def test_group_card_busy_states(qapp):
     assert card.sub_label.text() == "sub"
     assert card._spin_timer.isActive() is False
     assert card.btn_refresh.icon().pixmap(36, 36).toImage() == card._refresh_pixmap.toImage()
+
+
+def test_group_card_spin_stops_when_hidden(qapp):
+    theme = M3Theme()
+    parent = QWidget()
+    card = GroupHeaderCard(key="k", title="T", icon="🌐",
+                           subtitle="sub", theme=theme, parent=parent)
+    parent.show()
+    card.set_refreshing(True)
+    assert card._spin_timer.isActive() is True
+
+    card._spin_tick()
+    visible_icon = card.btn_refresh.icon().pixmap(36, 36).toImage()
+
+    parent.hide()
+    assert card._spin_timer.isActive() is False
+    card._spin_tick()
+    assert card.btn_refresh.icon().pixmap(36, 36).toImage() == visible_icon
+
+    parent.show()
+    assert card._spin_timer.isActive() is True
+    card._spin_tick()
+    assert card.btn_refresh.icon().pixmap(36, 36).toImage() != visible_icon
+
+
+def test_group_card_refresh_while_hidden_waits_for_show(qapp):
+    theme = M3Theme()
+    card = GroupHeaderCard(key="k", title="T", icon="🌐",
+                           subtitle="sub", theme=theme)
+    card.set_refreshing(True)
+    assert card._spin_timer.isActive() is False
+
+    card.show()
+    assert card._spin_timer.isActive() is True

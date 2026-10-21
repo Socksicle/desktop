@@ -19,7 +19,12 @@ from ..server_model import server_identity
 from ..i18n import tr
 from .base import ProxyEngine, EngineType
 from . import common
-from .singbox_config import TUN_ADAPTER_NAME, _generate_config
+from .singbox_config import (
+    MUX_DEFAULT_PROTOCOL,
+    MUX_MAX_CONNECTIONS_DEFAULT,
+    TUN_ADAPTER_NAME,
+    _generate_config,
+)
 
 log = logging.getLogger("engine.singbox")
 
@@ -157,6 +162,10 @@ class SingBoxEngine(ProxyEngine):
         self.custom_dns = None
         self.hy2_insecure = False
         self.block_udp = False
+        self.tls_fragment = False
+        self.mux_enabled = False
+        self.mux_protocol = MUX_DEFAULT_PROTOCOL
+        self.mux_max_connections = MUX_MAX_CONNECTIONS_DEFAULT
         self._tun_conflict = False
         self.available_servers: list = []
         self._api_port: int | None = None
@@ -309,6 +318,10 @@ class SingBoxEngine(ProxyEngine):
             api_port=self._api_port,
             api_secret=self._api_secret,
             server_tag_map_out=self._server_tag_map,
+            tls_fragment=self.tls_fragment,
+            mux_enabled=self.mux_enabled,
+            mux_protocol=self.mux_protocol,
+            mux_max_connections=self.mux_max_connections,
         )
 
     def build_args(self, server):

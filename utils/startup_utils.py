@@ -25,6 +25,7 @@ import ctypes
 import logging
 from pathlib import Path
 import signal
+import socket
 import struct
 import traceback
 
@@ -33,6 +34,7 @@ from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
     QObject,
+    QSocketNotifier,
     QTimer,
     SLOT,
     Slot,
@@ -41,7 +43,7 @@ from PySide6.QtCore import (
 from ui.message_box import MessageBox
 QMessageBox = MessageBox
 
-from utils.platform_utils import is_linux, is_windows, setup_logging
+from utils.platform_utils import is_frozen, is_linux, is_windows, setup_logging
 from utils.i18n import set_language, tr
 from utils.engines.engine_manager import (
     EngineType, get_engine,
@@ -49,11 +51,26 @@ from utils.engines.engine_manager import (
 
 log = logging.getLogger(__name__)
 
-WM_TASKBARCREATED = 0x0219
 WM_POWERBROADCAST = 0x0218
 PBT_APMRESUMESUSPEND = 0x0012
 
 _MIN_VALID_MSG_ADDRESS = 0x10000
+
+
+def _register_taskbar_created_message() -> int:
+    """Return the TaskbarCreated broadcast id for the current Windows session.
+
+    TaskbarCreated is registered at runtime with RegisterWindowMessageW; its
+    numeric value is session-specific and must not be hard-coded.
+    """
+    if not is_windows():
+        return 0
+    try:
+        return int(ctypes.windll.user32.RegisterWindowMessageW("TaskbarCreated"))
+    except (AttributeError, OSError) as e:
+        log.warning("Could not register TaskbarCreated message: %s", e)
+        return 0
+
 
 NM_STATE_UNKNOWN = 0
 NM_STATE_ASLEEP = 10
@@ -250,6 +267,7 @@ class TrayAndPowerFilter(QAbstractNativeEventFilter):
         self.on_taskbar_created = on_taskbar_created
         self.on_resume = on_resume
         self.on_interrupt = on_interrupt
+        self.taskbar_created_msg = _register_taskbar_created_message()
 
     def nativeEventFilter(self, eventType, message):
         try:
@@ -259,7 +277,7 @@ class TrayAndPowerFilter(QAbstractNativeEventFilter):
                     return False, 0
                 data = (ctypes.c_char * 32).from_address(addr)
                 _, msg, wparam, _ = struct.unpack_from("<QI4xQq", bytes(data))
-                if msg == WM_TASKBARCREATED:
+                if self.taskbar_created_msg and msg == self.taskbar_created_msg:
                     self.on_taskbar_created()
                 elif msg == WM_POWERBROADCAST and wparam == PBT_APMRESUMESUSPEND:
                     self.on_resume()
@@ -360,16 +378,48 @@ def setup_sigint_handler(app, window=None):
         log.debug("Could not install SIGINT handler: %s", e)
 
     # In Qt, C++ event loop blocks Python signal evaluation when idling.
-    # A short recurring timer yields control to Python bytecode so
-    # SIGINT is handled promptly when Ctrl+C is pressed in terminal.
-    try:
-        if isinstance(app, QObject):
-            timer = QTimer(app)
-            timer.timeout.connect(lambda: None)
-            timer.start(250)
-            app._sigint_timer = timer
-    except Exception as e:
-        log.debug("Could not start sigint wake timer: %s", e)
+    # On POSIX (Linux/macOS), signal.set_wakeup_fd + QSocketNotifier wakes
+    # the Qt event loop via the self-pipe trick with zero latency and zero
+    # periodic CPU wakeups during idle, preserving CPU sleep states (C-states).
+    # On Windows, SetConsoleCtrlHandler handles console events natively,
+    # making wake timers and wakeup sockets unnecessary.
+    if not is_windows() and isinstance(app, QObject):
+        try:
+            rsock, wsock = socket.socketpair()
+            rsock.setblocking(False)
+            wsock.setblocking(False)
+            old_fd = signal.set_wakeup_fd(wsock.fileno(), warn_on_full_buffer=False)
+
+            def _on_wakeup():
+                try:
+                    rsock.recv(4096)
+                except BlockingIOError:
+                    pass
+
+            notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Type.Read, app)
+            notifier.activated.connect(_on_wakeup)
+            app._sigint_notifier = notifier
+            app._sigint_sockets = (rsock, wsock)
+
+            def _cleanup():
+                try:
+                    signal.set_wakeup_fd(old_fd)
+                except Exception:
+                    pass
+                try:
+                    notifier.setEnabled(False)
+                except Exception:
+                    pass
+                for s in (rsock, wsock):
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+            if hasattr(app, "aboutToQuit") and hasattr(app.aboutToQuit, "connect"):
+                app.aboutToQuit.connect(_cleanup)
+        except Exception as e:
+            log.debug("Could not install signal wakeup notifier: %s", e)
 
     # On Windows console, also listen for console control events (Ctrl+C, Ctrl+Break, Close)
     try:
@@ -416,13 +466,6 @@ def apply_high_dpi_policy(app=None):
 
 PIXMAP_CACHE_LIMIT_KB = 1024
 
-# User-selectable render backend (persisted as settings["render_backend"]).
-# "auto"     - leave Qt defaults untouched (system default).
-# "software" - force software/OpenGL raster path (max compatibility, less VRAM).
-# "opengl"   - force desktop/hardware OpenGL path.
-RENDER_BACKENDS = ("auto", "software", "opengl")
-DEFAULT_RENDER_BACKEND = "auto"
-
 
 def configure_pixmap_cache(limit_kb: int = PIXMAP_CACHE_LIMIT_KB) -> bool:
     """Cap the global QPixmapCache (default 1 MB instead of Qt's ~10 MB).
@@ -438,44 +481,6 @@ def configure_pixmap_cache(limit_kb: int = PIXMAP_CACHE_LIMIT_KB) -> bool:
     except Exception as e:
         log.debug("Could not set QPixmapCache limit: %s", e)
         return False
-
-
-def normalize_render_backend(value: object) -> str:
-    """Coerce an arbitrary stored value to a known render backend id."""
-    backend = str(value or "").strip().lower()
-    if backend in RENDER_BACKENDS:
-        return backend
-    return DEFAULT_RENDER_BACKEND
-
-
-def apply_render_backend(backend: object) -> str:
-    """Apply a render backend choice before QApplication is constructed.
-
-    Must run before ``QApplication(...)``: sets the Qt OpenGL AA attribute
-    and the ``QT_OPENGL`` env hint. After QApplication exists only the env
-    hint is recorded (attributes can no longer change). Never raises;
-    returns the normalized backend id.
-    """
-    normalized = normalize_render_backend(backend)
-    try:
-        if normalized == "software":
-            os.environ["QT_OPENGL"] = "software"
-        elif normalized == "opengl":
-            os.environ["QT_OPENGL"] = "desktop"
-        # "auto": leave the environment/Qt defaults untouched.
-    except Exception as e:
-        log.debug("Could not set QT_OPENGL env: %s", e)
-    try:
-        if QCoreApplication.instance() is None:
-            if normalized == "software":
-                QCoreApplication.setAttribute(Qt.AA_UseSoftwareOpenGL)
-            elif normalized == "opengl":
-                QCoreApplication.setAttribute(Qt.AA_UseDesktopOpenGL)
-    except Exception as e:
-        log.debug("Could not set render backend attribute (%s): %s", normalized, e)
-    if normalized != DEFAULT_RENDER_BACKEND:
-        log.info("Render backend: %s", normalized)
-    return normalized
 
 
 def _read_settings_file() -> dict:
@@ -494,22 +499,6 @@ def _read_settings_file() -> dict:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         value = json.load(f)
     return value if isinstance(value, dict) else {}
-
-
-def load_render_backend_from_settings(settings: dict | None = None) -> str:
-    """Resolve the persisted render backend without instantiating ServerManager.
-
-    Accepts an in-memory settings dict (used by tests/UI); otherwise reads
-    ``settings.json`` from the user config dir directly so main.py can apply
-    the choice before QApplication exists.
-    """
-    if isinstance(settings, dict) and settings.get("render_backend") is not None:
-        return normalize_render_backend(settings.get("render_backend"))
-    try:
-        return normalize_render_backend(_read_settings_file().get("render_backend"))
-    except Exception as e:
-        log.debug("Could not load render backend from settings: %s", e)
-    return DEFAULT_RENDER_BACKEND
 
 
 def apply_language_from_settings(settings: dict | None = None) -> str:
@@ -547,11 +536,6 @@ def acquire_single_instance_lock():
     return None
 
 
-def apply_render_backend_from_settings(settings: dict | None = None) -> str:
-    """Load the persisted render backend and apply it (pre-QApplication)."""
-    return apply_render_backend(load_render_backend_from_settings(settings))
-
-
 def install_native_handlers(app, window):
     """Install platform-specific event handlers (Windows native messages or Linux D-Bus)
     and graceful Ctrl+C / SIGINT handlers.
@@ -569,9 +553,14 @@ def install_native_handlers(app, window):
 
     if is_windows():
         on_interrupt = window.quit_app if (window and hasattr(window, "quit_app")) else None
+
+        def _restore_tray():
+            if window is not None:
+                window.tray_manager.restore()
+
         filter_ = TrayAndPowerFilter(
-            on_taskbar_created=lambda: window.tray_icon.show(),
-            on_resume=window.reconnect_after_resume,
+            on_taskbar_created=_restore_tray,
+            on_resume=window.reconnect_after_resume if (window and hasattr(window, "reconnect_after_resume")) else None,
             on_interrupt=on_interrupt,
         )
         app.installNativeEventFilter(filter_)
@@ -667,7 +656,7 @@ def set_autostart(enable: bool, app_path: str | None = None) -> bool:
                 if enable:
                     if app_path:
                         exec_cmd = app_path if "--minimized" in app_path else f'"{app_path}" --minimized'
-                    elif getattr(sys, "frozen", False):
+                    elif is_frozen():
                         exec_cmd = f'"{sys.executable}" --minimized'
                     else:
                         main_script = Path(sys.argv[0]).resolve()
@@ -694,7 +683,7 @@ def set_autostart(enable: bool, app_path: str | None = None) -> bool:
             if enable:
                 if app_path:
                     exec_cmd = app_path if "--minimized" in app_path else f"{app_path} --minimized"
-                elif getattr(sys, "frozen", False):
+                elif is_frozen():
                     exec_cmd = f"{sys.executable} --minimized"
                 else:
                     main_script = Path(sys.argv[0]).resolve()
@@ -746,9 +735,14 @@ def find_usable_backend(engine_type=None) -> Path | None:
 
     engine = get_engine(engine_type)
     binary = engine.find_binary()
-    if binary is not None and engine.check_usable(binary).usable:
-        return binary
-    return None
+    if binary is None:
+        log.warning("No usable %s binary found across candidate paths", engine_type)
+        return None
+    check = engine.check_usable(binary)
+    if not check.usable:
+        log.warning("Candidate binary %s rejected: %s", binary, check.reason)
+        return None
+    return binary
 
 
 def manual_install_instructions() -> str:

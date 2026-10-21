@@ -135,6 +135,33 @@ class ConnectionManagerApplySettingsTest(unittest.TestCase):
         mgr.apply_settings({"killswitch": True})
         self.assertTrue(mgr.kill_switch_enabled)
 
+    def test_apply_settings_propagates_tunnel_options(self):
+        mgr = ConnectionManager({"engine": "sing-box"})
+        try:
+            mgr.apply_settings({
+                "tls_fragment": True,
+                "mux_enabled": True,
+                "mux_protocol": "smux",
+                "mux_max_connections": 9,
+            })
+            self.assertTrue(mgr.engine.tls_fragment)
+            self.assertTrue(mgr.engine.mux_enabled)
+            self.assertEqual(mgr.engine.mux_protocol, "smux")
+            self.assertEqual(mgr.engine.mux_max_connections, 9)
+        finally:
+            mgr.apply_settings({
+                "tls_fragment": False,
+                "mux_enabled": False,
+                "mux_protocol": "h2mux",
+                "mux_max_connections": 4,
+            })
+
+    def test_apply_settings_tunnel_options_ignored_by_xray(self):
+        mgr = ConnectionManager({"engine": "xray"})
+        mgr.apply_settings({"tls_fragment": True, "mux_enabled": True})
+        self.assertFalse(hasattr(mgr.engine, "tls_fragment"))
+        self.assertFalse(hasattr(mgr.engine, "mux_enabled"))
+
 
 class ConnectionManagerSwitchEngineTest(unittest.TestCase):
 
@@ -151,6 +178,12 @@ class ConnectionManagerSwitchEngineTest(unittest.TestCase):
                 eng.tun_mode = False
             if hasattr(eng, "hy2_insecure"):
                 eng.hy2_insecure = False
+            if hasattr(eng, "tls_fragment"):
+                eng.tls_fragment = False
+            if hasattr(eng, "mux_enabled"):
+                eng.mux_enabled = False
+                eng.mux_protocol = "h2mux"
+                eng.mux_max_connections = 4
 
     def test_switch_engine(self):
         mgr = ConnectionManager()
@@ -235,6 +268,12 @@ class ConnectionManagerToggleTest(unittest.TestCase):
                 eng.tun_mode = False
             if hasattr(eng, "hy2_insecure"):
                 eng.hy2_insecure = False
+            if hasattr(eng, "tls_fragment"):
+                eng.tls_fragment = False
+            if hasattr(eng, "mux_enabled"):
+                eng.mux_enabled = False
+                eng.mux_protocol = "h2mux"
+                eng.mux_max_connections = 4
 
     def test_toggle_connect(self):
         mgr = ConnectionManager()

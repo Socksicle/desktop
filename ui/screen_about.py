@@ -3,7 +3,6 @@ import logging
 import os
 import platform
 import re
-import socket
 import subprocess
 import sys
 import threading
@@ -13,14 +12,16 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QPushButton, QLineEdit
+    QFrame, QPushButton, QLineEdit, QGraphicsBlurEffect
 )
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QRectF
 from PySide6.QtGui import QFont, QPainter, QPixmap, QColor, QPainterPath, QGuiApplication
 
 from utils.icons import icon as _theme_icon
 from utils.i18n import tr
-from utils.platform_utils import get_app_dir, get_real_app_version, get_socksicle_user_agent
+from utils.platform_utils import (
+    get_app_dir, get_real_app_version, get_real_device_name, get_socksicle_user_agent,
+)
 from utils.subscription_store import get_installation_id
 from utils.twinsock import VERSION as TWSCORE_VERSION
 from .blob_avatar_view import BlobAvatarView
@@ -29,60 +30,6 @@ from .m3_scroll_area import M3ScrollArea
 
 
 log = logging.getLogger("about")
-
-
-def get_real_device_name() -> str:
-    """Retrieve actual hardware manufacturer and model or host/motherboard name."""
-    generic_placeholders = {
-        "system manufacturer", "to be filled by o.e.m.", "system product name",
-        "chassis manufacturer", "default string", "unknown", "none"
-    }
-
-    if sys.platform == "win32":
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS") as k:
-                mfr, _ = winreg.QueryValueEx(k, "SystemManufacturer")
-                prod, _ = winreg.QueryValueEx(k, "SystemProductName")
-                board, _ = winreg.QueryValueEx(k, "BaseBoardProduct")
-
-                mfr = str(mfr).strip()
-                prod = str(prod).strip()
-                board = str(board).strip()
-
-                mfr_valid = mfr and mfr.lower() not in generic_placeholders
-                prod_valid = prod and prod.lower() not in generic_placeholders
-                board_valid = board and board.lower() not in generic_placeholders
-
-                if mfr_valid and prod_valid:
-                    if prod.lower().startswith(mfr.lower()):
-                        return prod
-                    return f"{mfr} {prod}"
-                if prod_valid:
-                    return prod
-                if board_valid:
-                    host = os.environ.get("COMPUTERNAME") or socket.gethostname()
-                    return f"{host} ({board})"
-        except (OSError, AttributeError, ValueError) as e:
-            log.debug("Windows device name probe failed: %s", e)
-
-    elif sys.platform.startswith("linux"):
-        try:
-            p_vendor = Path("/sys/class/dmi/id/sys_vendor")
-            p_name = Path("/sys/class/dmi/id/product_name")
-            if p_name.is_file():
-                prod = p_name.read_text(encoding="utf-8").strip()
-                vendor = p_vendor.read_text(encoding="utf-8").strip() if p_vendor.is_file() else ""
-                if vendor and vendor.lower() not in generic_placeholders and prod and prod.lower() not in generic_placeholders:
-                    if prod.lower().startswith(vendor.lower()):
-                        return prod
-                    return f"{vendor} {prod}"
-                if prod and prod.lower() not in generic_placeholders:
-                    return prod
-        except (OSError, ValueError, UnicodeDecodeError) as e:
-            log.debug("Linux device name probe failed: %s", e)
-
-    return os.environ.get("COMPUTERNAME") or socket.gethostname() or platform.node() or "PC"
 
 
 @functools.lru_cache(maxsize=8)
@@ -277,7 +224,7 @@ class CircularAvatarView(QWidget):
             import urllib.request
             req = urllib.request.Request(
                 self.avatar_url,
-                headers={"User-Agent": "Socksicle/0.1-rc.1"}
+                headers={"User-Agent": get_socksicle_user_agent()}
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read()
@@ -318,6 +265,36 @@ class CircularAvatarView(QWidget):
             font = QFont("Segoe UI", 18, QFont.Bold)
             painter.setFont(font)
             painter.drawText(QRectF(0, 0, 52, 52), Qt.AlignCenter, self.initial_letter)
+
+
+class _HwidField(QLineEdit):
+    """Read-only TwinSock key field that blurs and reveals itself on click."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self._blur = None
+        self.set_blurred(True)
+
+    def is_blurred(self) -> bool:
+        return self._blur is not None
+
+    def set_blurred(self, blurred: bool):
+        if blurred == self.is_blurred():
+            return
+        if blurred:
+            self._blur = QGraphicsBlurEffect(self)
+            self._blur.setBlurRadius(8)
+            self.setGraphicsEffect(self._blur)
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.setGraphicsEffect(None)
+            self._blur = None
+            self.setCursor(Qt.IBeamCursor)
+
+    def mousePressEvent(self, event):
+        self.set_blurred(not self.is_blurred())
+        super().mousePressEvent(event)
 
 
 class ScreenAbout(QWidget):
@@ -411,12 +388,18 @@ class ScreenAbout(QWidget):
         hwid_row = QHBoxLayout()
         hwid_row.setSpacing(10)
 
-        self.edit_hwid = QLineEdit()
+        self.hwid_field = QFrame()
+        self.hwid_field.setObjectName("hwidField")
+        self.hwid_field.setFixedHeight(42)
+        hwid_field_layout = QHBoxLayout(self.hwid_field)
+        hwid_field_layout.setContentsMargins(14, 0, 14, 0)
+        hwid_field_layout.setSpacing(0)
+
+        self.edit_hwid = _HwidField()
         self.edit_hwid.setObjectName("editHwid")
-        self.edit_hwid.setReadOnly(True)
-        self.edit_hwid.setFixedHeight(42)
         self.edit_hwid.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        hwid_row.addWidget(self.edit_hwid, 1)
+        hwid_field_layout.addWidget(self.edit_hwid)
+        hwid_row.addWidget(self.hwid_field, 1)
 
         self.btn_copy_hwid = QPushButton(tr("about.copy"))
         self.btn_copy_hwid.setObjectName("btnCopyHwid")
@@ -448,8 +431,9 @@ class ScreenAbout(QWidget):
 
         lbl_issues_sub2 = QLabel(tr("about.issues_sub2"))
         lbl_issues_sub2.setObjectName("communitySub")
-        lbl_issues_sub2.setStyleSheet("font-size: 13.5px; margin-bottom: 6px;")
+        lbl_issues_sub2.setStyleSheet("font-size: 13.5px;")
         cl_layout.addWidget(lbl_issues_sub2)
+        cl_layout.addSpacing(6)
 
         social_row = QHBoxLayout()
         social_row.setSpacing(20)
@@ -564,6 +548,10 @@ class ScreenAbout(QWidget):
         for av in self._contrib_avatars:
             av.reload()
 
+    def hideEvent(self, event):
+        self.edit_hwid.set_blurred(True)
+        super().hideEvent(event)
+
     def _add_info_row(self, layout: QVBoxLayout, label: str, val: str) -> QLabel:
         row = QHBoxLayout()
         row.setContentsMargins(0, 10, 0, 10)
@@ -611,12 +599,6 @@ class ScreenAbout(QWidget):
         if self._hwid_tap_count >= 5:
             self._hwid_tap_count = 0
             self.devUnlocked.emit()
-            self.edit_hwid.setText("⚡ DEV UNLOCKED")
-            if not hasattr(self, "_dev_timer"):
-                self._dev_timer = QTimer(self)
-                self._dev_timer.setSingleShot(True)
-                self._dev_timer.timeout.connect(lambda: self.edit_hwid.setText(self.hwid_value))
-            self._dev_timer.start(2000)
 
     def apply_theme(self, theme):
         self.theme = theme
@@ -647,11 +629,15 @@ class ScreenAbout(QWidget):
                 color: {accent_hex};
             }}
             QLineEdit#editHwid {{
-                background-color: {surface_high};
+                background: transparent;
                 color: {text_hex};
+                border: none;
+                padding: 0;
+            }}
+            QFrame#hwidField {{
+                background-color: {surface_high};
                 border: 1px solid rgba(147, 143, 153, 0.2);
                 border-radius: 12px;
-                padding: 0 14px;
             }}
             QPushButton#btnSocial {{
                 background-color: {surface_high};

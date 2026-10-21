@@ -3,7 +3,6 @@ import concurrent.futures
 import logging
 import socket
 import statistics
-import threading
 import time
 import weakref
 from dataclasses import dataclass
@@ -13,6 +12,72 @@ from typing import Any, Iterable, Optional, Union
 log = logging.getLogger(__name__)
 
 TargetType = Union[str, tuple[str, int], Any]
+
+
+def _run_coroutine_sync(coro):
+    """Run a coroutine from synchronous code, even inside a running loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _configure_tcp_socket(sock: socket.socket) -> None:
+    """Apply low-latency socket optimizations (TCP_NODELAY, SO_REUSEADDR)."""
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except (OSError, AttributeError):
+        pass
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except (OSError, AttributeError):
+        pass
+
+
+def _configure_udp_socket(sock: socket.socket) -> None:
+    """Apply socket optimizations for UDP/QUIC datagrams."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except (OSError, AttributeError):
+        pass
+
+
+def parse_target_endpoint(target: TargetType, default_port: int = 80) -> tuple[str, int, Optional[str]]:
+    """Extract (host, port, protocol) from Server object, dict, tuple, or string."""
+    protocol = None
+    if hasattr(target, "host"):
+        host = getattr(target, "host", "") or ""
+        port = getattr(target, "port", default_port)
+        protocol = getattr(target, "protocol", None)
+    elif isinstance(target, dict):
+        host = target.get("host", "")
+        port = target.get("port", default_port)
+        protocol = target.get("protocol", None)
+    elif isinstance(target, (list, tuple)):
+        host = target[0] if len(target) > 0 else ""
+        port = target[1] if len(target) > 1 else default_port
+        protocol = target[2] if len(target) > 2 else None
+    else:
+        s = str(target).strip()
+        if s.startswith("[") and "]:" in s:
+            h, p = s.rsplit(":", 1)
+            host = h
+            port = int(p) if p.isdigit() else default_port
+        elif s.count(":") == 1:
+            h, p = s.split(":", 1)
+            host = h
+            port = int(p) if p.isdigit() else default_port
+        else:
+            host = s
+            port = default_port
+
+    try:
+        port = int(port)
+    except (ValueError, TypeError):
+        port = default_port
+    return str(host), port, protocol
 
 
 class ProbeQuality(str, Enum):
@@ -49,7 +114,6 @@ class Thp:
 
     _dns_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     _loop_sems: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
-    _sync_dns_sem: Optional[threading.BoundedSemaphore] = None
 
     @classmethod
     def _get_dns_executor(cls) -> concurrent.futures.ThreadPoolExecutor:
@@ -68,12 +132,6 @@ class Thp:
             sem = asyncio.Semaphore(cls.DNS_MAX_WORKERS)
             cls._loop_sems[loop] = sem
         return sem
-
-    @classmethod
-    def _get_sync_dns_sem(cls) -> threading.BoundedSemaphore:
-        if cls._sync_dns_sem is None:
-            cls._sync_dns_sem = threading.BoundedSemaphore(cls.DNS_MAX_WORKERS)
-        return cls._sync_dns_sem
 
     @staticmethod
     def is_ip_literal(host: str) -> bool:
@@ -103,34 +161,9 @@ class Thp:
         return v4 + v6 if v4 else v6
 
     @staticmethod
-    def _pick_ip(addrs: list) -> str:
-        ips = Thp._extract_ips(addrs)
-        return ips[0][1] if ips else ""
-
-    @staticmethod
     def _parse_target(target: TargetType, default_port: int) -> tuple[str, int]:
-        if hasattr(target, "host") and hasattr(target, "port"):
-            try:
-                return str(target.host), int(target.port)
-            except (ValueError, TypeError):
-                return str(target.host), default_port
-        if isinstance(target, dict):
-            try:
-                return str(target.get("host", "")), int(target.get("port", default_port))
-            except (ValueError, TypeError):
-                return str(target.get("host", "")), default_port
-        if isinstance(target, (tuple, list)):
-            return str(target[0]), int(target[1])
-        s = str(target).strip()
-        if s.startswith("[") and "]:" in s:
-            h, p = s.rsplit(":", 1)
-            if p.isdigit():
-                return h, int(p)
-        elif s.count(":") == 1:
-            h, p = s.split(":", 1)
-            if p.isdigit():
-                return h, int(p)
-        return s, default_port
+        h, p, _ = parse_target_endpoint(target, default_port)
+        return h, p
 
     @staticmethod
     def _sort_key(res: ThpResult) -> tuple[int, float]:
@@ -178,75 +211,14 @@ class Thp:
         host: str,
         port: int = 443,
         timeout_sec: float = 2.5,
-        **_kwargs: Any,
+        attempts: Optional[int] = None,
+        **kwargs: Any,
     ) -> ThpResult:
-        start_overall = time.perf_counter()
-        deadline = start_overall + timeout_sec
-        clean_host = host.strip().strip("[]")
-
-        if cls.is_ip_literal(clean_host):
-            fam = socket.AF_INET6 if ":" in clean_host else socket.AF_INET
-            candidates = [(fam, clean_host)]
-        else:
-            rem_dns_wait = deadline - time.perf_counter()
-            if rem_dns_wait <= 0:
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
-            sem = cls._get_sync_dns_sem()
-            if not sem.acquire(timeout=max(0.01, rem_dns_wait)):
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout waiting for DNS slot")
-
-            fut = cls._get_dns_executor().submit(
-                socket.getaddrinfo, clean_host, port, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
-            fut.add_done_callback(lambda _: sem.release())
-            try:
-                rem_dns = deadline - time.perf_counter()
-                if rem_dns <= 0:
-                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
-                dns_timeout = min(max(0.05, rem_dns), cls.DNS_RESOLVE_CAP_SEC)
-                addrs = fut.result(timeout=dns_timeout)
-                candidates = cls._extract_ips(addrs)
-                if not candidates:
-                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="No IP addresses resolved")
-            except concurrent.futures.TimeoutError:
-                fut.cancel()
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="DNS timeout")
-            except Exception as e:
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message=f"DNS failed: {e}")
-
-        active_candidates = list(candidates)
-        rtts: list[float] = []
-        last_error: Optional[str] = None
-
-        for _ in range(cls.PROBE_ATTEMPTS):
-            if deadline - time.perf_counter() <= 0:
-                last_error = last_error or "Timeout before attempt"
-                break
-
-            for idx, (fam, ip_addr) in enumerate(active_candidates):
-                rem_conn = deadline - time.perf_counter()
-                if rem_conn <= 0:
-                    last_error = "Timeout"
-                    break
-                rem_cands = len(active_candidates) - idx
-                cand_cap = 0.5 if rem_cands > 1 else cls.TCP_CONNECT_CAP_SEC
-                with socket.socket(fam, socket.SOCK_STREAM) as sock:
-                    try:
-                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    except (OSError, AttributeError):
-                        pass
-                    sock.settimeout(min(rem_conn, cand_cap))
-                    t0 = time.perf_counter()
-                    try:
-                        sock.connect((ip_addr, port))
-                        rtts.append((time.perf_counter() - t0) * 1000.0)
-                        if idx > 0:
-                            active_candidates.insert(0, active_candidates.pop(idx))
-                        break
-                    except (OSError, ValueError) as e:
-                        last_error = str(e)
-
-        return cls._calc_result(host, port, rtts, cls.PROBE_ATTEMPTS, last_error)
+        """Synchronous wrapper around :meth:`async_probe`."""
+        return _run_coroutine_sync(
+            cls.async_probe(
+                host, port, timeout_sec=timeout_sec,
+                attempts=attempts, **kwargs))
 
     @classmethod
     async def async_probe(
@@ -254,8 +226,10 @@ class Thp:
         host: str,
         port: int = 443,
         timeout_sec: float = 2.5,
+        attempts: Optional[int] = None,
         **_kwargs: Any,
     ) -> ThpResult:
+        num_attempts = max(1, attempts if attempts is not None else cls.PROBE_ATTEMPTS)
         start_overall = time.perf_counter()
         deadline = start_overall + timeout_sec
         clean_host = host.strip().strip("[]")
@@ -305,7 +279,7 @@ class Thp:
         rtts: list[float] = []
         last_error: Optional[str] = None
 
-        for _ in range(cls.PROBE_ATTEMPTS):
+        for _ in range(num_attempts):
             if deadline - time.perf_counter() <= 0:
                 last_error = last_error or "Timeout before attempt"
                 break
@@ -326,10 +300,7 @@ class Thp:
                     rtts.append((time.perf_counter() - t0) * 1000.0)
                     sock = writer.get_extra_info("socket")
                     if sock is not None:
-                        try:
-                            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        except (OSError, AttributeError):
-                            pass
+                        _configure_tcp_socket(sock)
                     writer.close()
                     try:
                         await asyncio.wait_for(writer.wait_closed(), timeout=0.05)
@@ -341,7 +312,7 @@ class Thp:
                 except Exception as e:
                     last_error = str(e)
 
-        return cls._calc_result(host, port, rtts, cls.PROBE_ATTEMPTS, last_error)
+        return cls._calc_result(host, port, rtts, num_attempts, last_error)
 
     @classmethod
     async def async_probe_many(
@@ -378,20 +349,13 @@ class Thp:
         sort: bool = True,
         **kwargs: Any,
     ) -> list[ThpResult]:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        coro = cls.async_probe_many(
-            targets=targets,
-            default_port=default_port,
-            timeout_sec=timeout_sec,
-            concurrency=concurrency,
-            sort=sort,
-            **kwargs,
-        )
-        if loop is not None and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return asyncio.run(coro)
+        """Synchronous wrapper around :meth:`async_probe_many`."""
+        return _run_coroutine_sync(
+            cls.async_probe_many(
+                targets=targets,
+                default_port=default_port,
+                timeout_sec=timeout_sec,
+                concurrency=concurrency,
+                sort=sort,
+                **kwargs,
+            ))

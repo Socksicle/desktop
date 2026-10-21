@@ -36,10 +36,14 @@ def test_server_item_flags_toggle():
     theme = M3Theme(preset_key="lavender")
     item = ServerItem("Germany 🇩🇪", _srv(), theme)
     assert item.radio._show_flags is False
+    assert "🇩🇪" in item.radio.text()
     item.set_show_flags(True)
     assert item.radio._show_flags is True
+    assert "🇩🇪" not in item.radio.text()
+    assert item.radio.flag_emoji == "🇩🇪"
     item.set_show_flags(False)
     assert item.radio._show_flags is False
+    assert "🇩🇪" in item.radio.text()
 
 
 def test_server_list_panel_flags_propagate():

@@ -43,10 +43,11 @@ jobs:
             nuitka-windows-${{ hashFiles('pyproject.toml') }}-
             nuitka-windows-
 
-      - name: Download sing-box and wintun
+      - name: Download sing-box, wintun and xray
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path bin/singbox
+          New-Item -ItemType Directory -Force -Path temp_cores/singbox
+          New-Item -ItemType Directory -Force -Path temp_cores/xray
           
           # Fetch sing-box 1.14.3 (Windows x64)
           $sbVersion = "1.14.3"
@@ -55,18 +56,28 @@ jobs:
           Invoke-WebRequest -Uri $sbUrl -OutFile singbox.zip
           Expand-Archive -Path singbox.zip -DestinationPath temp_sb
           $sbExe = (Get-ChildItem -Path temp_sb -Filter "sing-box.exe" -Recurse).FullName
-          Copy-Item $sbExe "bin/singbox/sing-box.exe" -Force
+          Copy-Item $sbExe "temp_cores/singbox/sing-box.exe" -Force
           
           # Fetch wintun.dll (for TUN mode on Windows)
           $wintunUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
           Write-Host "Downloading wintun driver..."
           Invoke-WebRequest -Uri $wintunUrl -OutFile wintun.zip
           Expand-Archive -Path wintun.zip -DestinationPath temp_wintun
-          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "bin/singbox/wintun.dll" -Force
+          Copy-Item "temp_wintun/wintun/bin/amd64/wintun.dll" "temp_cores/singbox/wintun.dll" -Force
+
+          # Fetch Xray 26.3.27 (Windows x64)
+          $xrayVersion = "26.3.27"
+          $xrayUrl = "https://github.com/XTLS/Xray-core/releases/download/v$xrayVersion/Xray-windows-64.zip"
+          Write-Host "Downloading Xray from $xrayUrl..."
+          Invoke-WebRequest -Uri $xrayUrl -OutFile xray.zip
+          Expand-Archive -Path xray.zip -DestinationPath temp_xray
+          Copy-Item "temp_xray/xray.exe" "temp_cores/xray/xray.exe" -Force
+          if (Test-Path "temp_xray/geoip.dat") { Copy-Item "temp_xray/geoip.dat" "temp_cores/xray/" -Force }
+          if (Test-Path "temp_xray/geosite.dat") { Copy-Item "temp_xray/geosite.dat" "temp_cores/xray/" -Force }
 
           # Clean up temporary archives so they don't get picked up by release upload
-          Remove-Item singbox.zip, wintun.zip -Force -ErrorAction SilentlyContinue
-          Remove-Item temp_sb, temp_wintun -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item singbox.zip, wintun.zip, xray.zip -Force -ErrorAction SilentlyContinue
+          Remove-Item temp_sb, temp_wintun, temp_xray -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Compile with Nuitka (Native C++)
         shell: pwsh
@@ -93,9 +104,6 @@ jobs:
             Move-Item -Path "dist/main.dist" -Destination "dist/Socksicle.dist" -Force
           }
 
-          # Copy bin directory into standalone distribution
-          Copy-Item -Path "bin" -Destination "dist/Socksicle.dist/bin" -Recurse -Force
-
       - name: Resolve Version
         id: get_version
         shell: pwsh
@@ -110,28 +118,54 @@ jobs:
             if ($match) {
               $ver = $match.Matches.Groups[1].Value
             } else {
-              $ver = "0.1-rc.1"
+              $ver = "0.1.1"
             }
           }
           Write-Host "Resolved application version: $ver"
           "VERSION=$ver" >> $env:GITHUB_ENV
 
-      - name: Package Portable ZIP
+      - name: Package Windows Distributions
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/Socksicle.dist/* -DestinationPath "Socksicle-$env:VERSION-Windows-Portable-x64.zip"
+          # 1. Coreless variant (no cores bundled)
+          New-Item -ItemType Directory -Force -Path dist/variants/coreless
+          Copy-Item -Path "dist/Socksicle.dist/*" -Destination "dist/variants/coreless" -Recurse -Force
+          Compress-Archive -Path dist/variants/coreless/* -DestinationPath "Socksicle-$env:VERSION-Windows-Portable-Coreless-x64.zip"
+
+          # 2. Default variant (sing-box + wintun)
+          New-Item -ItemType Directory -Force -Path dist/variants/default/bin/singbox
+          Copy-Item -Path "dist/Socksicle.dist/*" -Destination "dist/variants/default" -Recurse -Force
+          Copy-Item -Path "temp_cores/singbox/*" -Destination "dist/variants/default/bin/singbox" -Recurse -Force
+          Compress-Archive -Path dist/variants/default/* -DestinationPath "Socksicle-$env:VERSION-Windows-Portable-x64.zip"
+
+          # 3. With-Xray variant (sing-box + wintun + xray)
+          New-Item -ItemType Directory -Force -Path dist/variants/with-xray/bin/singbox
+          New-Item -ItemType Directory -Force -Path dist/variants/with-xray/bin/xray
+          Copy-Item -Path "dist/Socksicle.dist/*" -Destination "dist/variants/with-xray" -Recurse -Force
+          Copy-Item -Path "temp_cores/singbox/*" -Destination "dist/variants/with-xray/bin/singbox" -Recurse -Force
+          Copy-Item -Path "temp_cores/xray/*" -Destination "dist/variants/with-xray/bin/xray" -Recurse -Force
+          Compress-Archive -Path dist/variants/with-xray/* -DestinationPath "Socksicle-$env:VERSION-Windows-Portable-With-Xray-x64.zip"
 
       - name: Install Inno Setup
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
 
-      - name: Build Installer (Inno Setup)
+      - name: Build Installers (Inno Setup)
         shell: pwsh
         run: |
+          # Default installer (sing-box)
           & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
             /DMyAppVersion="$env:VERSION" `
+            /DMySourceDir="..\..\dist\variants\default" `
             /DOutputBaseFilename="Socksicle-Setup-$env:VERSION-x64" `
+            packaging/windows/installer.iss
+
+          # Full installer with Xray (sing-box + xray)
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
+            /DMyAppVersion="$env:VERSION" `
+            /DMySourceDir="..\..\dist\variants\with-xray" `
+            /DOutputBaseFilename="Socksicle-Setup-$env:VERSION-With-Xray-x64" `
             packaging/windows/installer.iss
 
       - name: Upload Artifacts to GitHub Action Run
@@ -140,7 +174,7 @@ jobs:
           name: socksicle-windows-artifacts
           path: |
             dist-installer/*.exe
-            Socksicle-*-Windows-Portable-x64.zip
+            Socksicle-*-Windows-Portable-*.zip
 
       - name: Publish Windows Artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -148,7 +182,7 @@ jobs:
         with:
           files: |
             dist-installer/*.exe
-            Socksicle-*-Windows-Portable-x64.zip
+            Socksicle-*-Windows-Portable-*.zip
 
   build-linux:
     name: Build Linux (AppImage)
@@ -189,14 +223,26 @@ jobs:
             nuitka-linux-${{ hashFiles('pyproject.toml') }}-
             nuitka-linux-
 
-      - name: Download sing-box (Linux amd64)
+      - name: Download sing-box and xray (Linux amd64)
         run: |
-          mkdir -p bin/singbox
+          mkdir -p temp_cores/singbox
+          mkdir -p temp_cores/xray
+
+          # Fetch sing-box 1.14.3
           sbVersion="1.14.3"
           sbUrl="https://github.com/SagerNet/sing-box/releases/download/v${sbVersion}/sing-box-${sbVersion}-linux-amd64.tar.gz"
           echo "Downloading sing-box from $sbUrl..."
-          curl -sSL "$sbUrl" | tar -xz -C bin/singbox --strip-components=1
-          chmod +x bin/singbox/sing-box
+          curl -sSL "$sbUrl" | tar -xz -C temp_cores/singbox --strip-components=1
+          chmod +x temp_cores/singbox/sing-box
+
+          # Fetch Xray 26.3.27
+          xrayVersion="26.3.27"
+          xrayUrl="https://github.com/XTLS/Xray-core/releases/download/v${xrayVersion}/Xray-linux-64.zip"
+          echo "Downloading Xray from $xrayUrl..."
+          curl -sSL "$xrayUrl" -o xray.zip
+          unzip -q -o xray.zip -d temp_cores/xray
+          rm -f xray.zip
+          chmod +x temp_cores/xray/xray
 
       - name: Resolve Version
         run: |
@@ -206,7 +252,7 @@ jobs:
             VER="${GITHUB_REF_NAME}"
           else
             VER=$(grep -m1 'version = ' pyproject.toml | cut -d '"' -f 2)
-            [ -z "$VER" ] && VER="0.1-rc.1"
+            [ -z "$VER" ] && VER="0.1.1"
           fi
           echo "Resolved version: $VER"
           echo "VERSION=$VER" >> $GITHUB_ENV
@@ -232,59 +278,90 @@ jobs:
             mv dist/main.dist dist/Socksicle.dist
           fi
 
-      - name: Build AppImage
+      - name: Build AppImage and Tar.xz Packages
         run: |
-          mkdir -p AppDir/usr/bin
-          mkdir -p AppDir/usr/share/applications
-          mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
-          
-          # Copy standalone build and binary dependencies
-          cp -r dist/Socksicle.dist/* AppDir/usr/bin/
-          cp -r bin AppDir/usr/bin/
-          chmod +x AppDir/usr/bin/socksicle
-          chmod +x AppDir/usr/bin/bin/singbox/sing-box 2>/dev/null || true
-
-          # Create AppRun entrypoint
-          cat << 'EOF' > AppDir/AppRun
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/socksicle" "$@"
-          EOF
-          chmod +x AppDir/AppRun
-
-          # Create desktop shortcut
-          cat << 'EOF' > AppDir/socksicle.desktop
-          [Desktop Entry]
-          Name=Socksicle
-          Exec=socksicle
-          Icon=socksicle
-          Type=Application
-          Categories=Network;Security;X-Proxy;
-          Comment=Cross-platform proxy client with Material 3 UI
-          Terminal=false
-          EOF
-          cp AppDir/socksicle.desktop AppDir/usr/share/applications/socksicle.desktop
-
-          # Copy icon
-          cp icon.svg AppDir/socksicle.svg
-          cp icon.svg AppDir/usr/share/icons/hicolor/scalable/apps/socksicle.svg
-
-          # Download and run appimagetool
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract
-          ARCH=x86_64 ./squashfs-root/AppRun AppDir "Socksicle-${VERSION}-x86_64.AppImage"
           rm -f appimagetool-x86_64.AppImage
-          rm -rf squashfs-root
+
+          build_variant() {
+            local variant_name="$1"
+            local appimage_file="$2"
+            local tar_file="$3"
+            local inc_sb="$4"
+            local inc_xray="$5"
+
+            echo "=== Building variant: $variant_name ==="
+            rm -rf AppDir
+            mkdir -p AppDir/usr/bin
+            mkdir -p AppDir/usr/share/applications
+            mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
+
+            # Base application files
+            cp -r dist/Socksicle.dist/* AppDir/usr/bin/
+            chmod +x AppDir/usr/bin/socksicle
+
+            # Cores
+            if [ "$inc_sb" = "1" ]; then
+              mkdir -p AppDir/usr/bin/bin/singbox
+              cp -r temp_cores/singbox/* AppDir/usr/bin/bin/singbox/
+              chmod +x AppDir/usr/bin/bin/singbox/sing-box 2>/dev/null || true
+            fi
+            if [ "$inc_xray" = "1" ]; then
+              mkdir -p AppDir/usr/bin/bin/xray
+              cp -r temp_cores/xray/* AppDir/usr/bin/bin/xray/
+              chmod +x AppDir/usr/bin/bin/xray/xray 2>/dev/null || true
+            fi
+
+            # AppRun entrypoint
+            printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/socksicle" "$@"\n' > AppDir/AppRun
+            chmod +x AppDir/AppRun
+
+            # Desktop entry
+            printf '[Desktop Entry]\nName=Socksicle\nExec=socksicle\nIcon=socksicle\nType=Application\nCategories=Network;Security;X-Proxy;\nComment=Cross-platform proxy client with Material 3 UI\nTerminal=false\n' > AppDir/socksicle.desktop
+            cp AppDir/socksicle.desktop AppDir/usr/share/applications/socksicle.desktop
+
+            # Icons
+            cp icon.svg AppDir/socksicle.svg
+            cp icon.svg AppDir/usr/share/icons/hicolor/scalable/apps/socksicle.svg
+
+            # 1. Package tar.xz
+            rm -rf tar_stage
+            mkdir -p tar_stage/Socksicle
+            cp -r AppDir/usr/bin/* tar_stage/Socksicle/
+            cp AppDir/socksicle.desktop tar_stage/Socksicle/
+            cp icon.svg tar_stage/Socksicle/
+            tar -cJf "$tar_file" -C tar_stage Socksicle
+            rm -rf tar_stage
+
+            # 2. Package AppImage
+            ARCH=x86_64 ./squashfs-root/AppRun AppDir "$appimage_file"
+          }
+
+          # 1. Default (with sing-box)
+          build_variant "default" "Socksicle-${VERSION}-x86_64.AppImage" "Socksicle-${VERSION}-Linux-x86_64.tar.xz" 1 0
+
+          # 2. With Xray (sing-box + xray)
+          build_variant "with-xray" "Socksicle-${VERSION}-With-Xray-x86_64.AppImage" "Socksicle-${VERSION}-Linux-With-Xray-x86_64.tar.xz" 1 1
+
+          # 3. Coreless (no cores)
+          build_variant "coreless" "Socksicle-${VERSION}-Coreless-x86_64.AppImage" "Socksicle-${VERSION}-Linux-Coreless-x86_64.tar.xz" 0 0
+
+          rm -rf squashfs-root AppDir temp_cores
 
       - name: Upload Artifacts to GitHub Action Run
         uses: actions/upload-artifact@v7
         with:
           name: socksicle-linux-artifacts
-          path: "Socksicle-*.AppImage"
+          path: |
+            Socksicle-*.AppImage
+            Socksicle-*.tar.xz
 
       - name: Publish Linux Artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: "Socksicle-*.AppImage"
+          files: |
+            Socksicle-*.AppImage
+            Socksicle-*.tar.xz

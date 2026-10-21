@@ -1,4 +1,4 @@
-"""Tests for trilingual UI support (utils.i18n + catalogs)."""
+"""Tests for multilingual UI support (utils.i18n + catalogs)."""
 import pathlib
 import re
 import string
@@ -6,7 +6,7 @@ import string
 import pytest
 
 from utils import i18n
-from utils import i18n_en, i18n_ru, i18n_zh
+from utils import i18n_en, i18n_he, i18n_ru, i18n_zh
 from utils.i18n import get_language, set_language, tr, trn
 
 
@@ -34,6 +34,9 @@ def test_tr_fallback_chain():
     set_language("zh")
     assert tr("nav.settings") == "设置"
     assert tr("missing.key") == "missing.key"
+    set_language("he")
+    assert tr("nav.settings") == "הגדרות"
+    assert tr("missing.key") == "missing.key"
 
 
 def test_trn_plural_forms():
@@ -50,6 +53,9 @@ def test_trn_plural_forms():
     set_language("zh")
     assert trn("tray.nodes_added", 1).format(n=1) == "已添加 1 个新节点。"
     assert trn("tray.nodes_added", 5).format(n=5) == "已添加 5 个新节点。"
+    set_language("he")
+    assert trn("tray.nodes_added", 1).format(n=1) == "נוסף צומת חדש 1."
+    assert trn("tray.nodes_added", 2).format(n=2) == "נוספו 2 צמתים חדשים."
 
 
 def test_tr_zh_falls_back_to_english(monkeypatch):
@@ -60,9 +66,19 @@ def test_tr_zh_falls_back_to_english(monkeypatch):
     assert tr("nav.settings") == "Настройки"
 
 
+def test_tr_he_falls_back_to_english(monkeypatch):
+    set_language("he")
+    monkeypatch.delitem(i18n_he.STRINGS, "nav.settings")
+    assert tr("nav.settings") == "Settings"
+    monkeypatch.delitem(i18n_en.STRINGS, "nav.settings")
+    assert tr("nav.settings") == "Настройки"
+
+
 def _used_tr_keys():
     keys = set()
-    for root in (pathlib.Path("utils"), pathlib.Path("ui")):
+    base = pathlib.Path(__file__).resolve().parent.parent
+    for sub in ("utils", "ui"):
+        root = base / sub
         for path in root.rglob("*.py"):
             if path.name.startswith("i18n_"):
                 continue
@@ -82,6 +98,7 @@ def test_catalogs_cover_every_used_key():
     assert not [k for k in used if k not in i18n_ru.STRINGS]
     assert not [k for k in used if k not in i18n_en.STRINGS]
     assert not [k for k in used if k not in i18n_zh.STRINGS]
+    assert not [k for k in used if k not in i18n_he.STRINGS]
 
 
 def test_zh_catalog_matches_english_keys_and_placeholders():
@@ -89,6 +106,20 @@ def test_zh_catalog_matches_english_keys_and_placeholders():
     assert set(i18n_zh.STRINGS) == set(i18n_ru.STRINGS)
     for key, value in i18n_en.STRINGS.items():
         other = i18n_zh.STRINGS[key]
+        if isinstance(value, dict):
+            assert set(other) == set(value), key
+            for form, text in value.items():
+                assert _placeholders(text) == _placeholders(other[form]), key
+        else:
+            assert isinstance(other, str), key
+            assert _placeholders(value) == _placeholders(other), key
+
+
+def test_he_catalog_matches_english_keys_and_placeholders():
+    assert set(i18n_he.STRINGS) == set(i18n_en.STRINGS)
+    assert set(i18n_he.STRINGS) == set(i18n_ru.STRINGS)
+    for key, value in i18n_en.STRINGS.items():
+        other = i18n_he.STRINGS[key]
         if isinstance(value, dict):
             assert set(other) == set(value), key
             for form, text in value.items():
@@ -112,7 +143,7 @@ def test_settings_screen_renders_english(qapp):
     assert "THP (recommended)" in titles
     screen.open_section("appearance", "Appearance")
     langs = [screen.lang_combo.itemText(i) for i in range(screen.lang_combo.count())]
-    assert langs == ["Русский", "English", "中文"]
+    assert langs == ["Русский", "English", "中文", "עברית (בטא)"]
     assert screen.lbl_lang_hint.text() == "Applies after app restart"
 
 

@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 
 from PySide6.QtWidgets import (
@@ -33,7 +34,13 @@ from utils.subscription_store import get_last_fetch_error
 from utils.ping import DEFAULT_PING_METHOD, DEFAULT_PING_TIMEOUT
 from utils.theme import M3Theme
 from utils.platform_utils import get_app_dir
-from utils.window_utils import start_window_move
+from utils.window_utils import (
+    configure_main_window,
+    cursor_for_edge,
+    get_resize_edge,
+    start_window_move,
+    start_window_resize,
+)
 from utils.engines.engine_manager import get_engine, get_current_engine, EngineType
 from utils.startup_utils import show_backend_missing, show_singbox_outdated
 from .theme_transition import (
@@ -72,13 +79,13 @@ class RoundedWindow(QWidget):
         self.theme = M3Theme(
             preset_key=self.settings.get("theme_preset", "dynamic"),
             seed=self._custom_theme_seed(),
+            spec=self.settings.get("theme_spec", "2021"),
         )
         self._filter_mode = 0
         self._selected_server_key = None
 
-        self.setWindowFlags(Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(440, 800)
+        self.setWindowTitle("Socksicle")
+        configure_main_window(self, 440, 800)
 
         icon_file = get_app_dir() / "icon.svg"
         self.icon_path = str(icon_file) if icon_file.exists() else "icon.svg"
@@ -116,7 +123,8 @@ class RoundedWindow(QWidget):
         self._refreshing_key = None
 
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(10, 10, 10, 10)
+        margin = 10 if sys.platform == "win32" else 0
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
 
         self.container = QFrame()
         self.container.setObjectName("rootContainer")
@@ -216,22 +224,9 @@ class RoundedWindow(QWidget):
         self._layout_overlays()
 
     def _apply_container_mask(self):
-        """Clip the container (and its square-cornered children) to the
-        rounded window shape.
-
-        Stylesheet border-radius only rounds the container's own background:
-        child widgets paint square corners that poke out of the rounded
-        window. A rounded-region mask clips the whole subtree, so the
-        window rounding itself stays clean. Radius must match the
-        rootContainer stylesheet (32px).
-        """
-        w = self.container.width()
-        h = self.container.height()
-        if w <= 0 or h <= 0:
-            return
-        path = QPainterPath()
-        path.addRoundedRect(0.0, 0.0, float(w), float(h), 32.0, 32.0)
-        self.container.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        """Ensure clean anti-aliased corners without 1-bit raster mask artifacts."""
+        self.clearMask()
+        self.container.clearMask()
 
     def _toggle_search_bar(self):
         self.taskbar.toggle_search()
@@ -266,10 +261,15 @@ class RoundedWindow(QWidget):
         self.settings["theme_preset"] = key
         self.server_manager.save_settings()
         start = theme_tokens(self.theme)
-        probe = M3Theme(preset_key=key, seed=self._custom_theme_seed())
+        probe = M3Theme(
+            preset_key=key,
+            seed=self._custom_theme_seed(),
+            spec=self.settings.get("theme_spec", "2021"),
+        )
         end = theme_tokens(probe)
         self.theme.preset_key = probe.preset_key
         self.theme.is_amoled = probe.is_amoled
+        self.theme.spec = probe.spec
         if start == end:
             apply_theme_tokens(self.theme, end)
             self._clear_icon_cache()
@@ -288,7 +288,33 @@ class RoundedWindow(QWidget):
     @Slot(object)
     def _on_theme_frame(self, tokens):
         apply_theme_tokens(self.theme, tokens)
-        self.apply_theme_styles(refresh=False)
+        self.apply_theme_fast()
+
+    def apply_theme_fast(self):
+        """Ultra-fast (<1ms) visual styling for intermediate theme transition frames.
+
+        Avoids full QWidget tree repolishing (app.setStyleSheet) and expensive
+        multi-screen CSS recalculations during animation ticks.
+        """
+        self.container.setStyleSheet(
+            f"QFrame#rootContainer {{ background-color: {self.theme.surface}; border-radius: 32px; border: none; outline: none; }}"
+        )
+        if hasattr(self, "header_bar") and self.header_bar:
+            if hasattr(self.header_bar, "apply_theme_fast"):
+                self.header_bar.apply_theme_fast(self.theme)
+            else:
+                self.header_bar.apply_theme(self.theme)
+        if hasattr(self, "taskbar") and self.taskbar:
+            self.taskbar.apply_theme(self.theme)
+        if hasattr(self, "bottom_fade") and self.bottom_fade:
+            self.bottom_fade.theme = self.theme
+            self.bottom_fade.update()
+
+        cur = self.screen_stack.currentWidget()
+        if cur is self.screen_settings and hasattr(self.screen_settings, "apply_theme_fast"):
+            self.screen_settings.apply_theme_fast(self.theme)
+        elif cur is self.screen_main and hasattr(self.screen_main, "apply_theme_fast"):
+            self.screen_main.apply_theme_fast(self.theme)
 
     @Slot()
     def _on_theme_transition_finished(self):
@@ -915,6 +941,11 @@ class RoundedWindow(QWidget):
             self.activateWindow()
 
     def mousePressEvent(self, e):
+        edge = get_resize_edge(e.position().toPoint(), self.width(), self.height())
+        if edge and e.button() == Qt.LeftButton:
+            if start_window_resize(self, edge):
+                return
+
         if e.button() == Qt.LeftButton and e.position().y() < 60:
             if start_window_move(self):
                 return
@@ -922,6 +953,12 @@ class RoundedWindow(QWidget):
             self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):
+        edge = get_resize_edge(e.position().toPoint(), self.width(), self.height())
+        if edge:
+            self.setCursor(cursor_for_edge(edge))
+        else:
+            self.unsetCursor()
+
         if self._dragging:
             self.move(e.globalPosition().toPoint() - self._drag_pos)
 

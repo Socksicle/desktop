@@ -12,6 +12,17 @@ from .anim_utils import fluid_easing
 
 
 _TCP_LIKE = ("", "tcp", "none")
+_BADGE_FONT = None
+
+
+def _get_badge_font() -> QFont:
+    global _BADGE_FONT
+    if _BADGE_FONT is None:
+        f = QFont()
+        f.setPointSize(9)
+        f.setWeight(QFont.DemiBold)
+        _BADGE_FONT = f
+    return _BADGE_FONT
 
 
 def _security_label(security: str) -> str:
@@ -136,19 +147,21 @@ class ConfigTagBadge(QWidget):
         self._hovered = False
         self._progress = 0.0
 
-        self._font = QFont()
-        self._font.setPointSize(9)
-        self._font.setWeight(QFont.DemiBold)
+        self._font = _get_badge_font()
 
         self._compact_width = 0
         self._expanded_width = 0
 
         self.setFixedHeight(20)
         self.setAttribute(Qt.WA_Hover, True)
+        self._anim: Optional[QPropertyAnimation] = None
 
-        self._anim = QPropertyAnimation(self, b"progress")
-        self._anim.setDuration(240)
-        self._anim.setEasingCurve(fluid_easing())
+    def _get_anim(self) -> QPropertyAnimation:
+        if self._anim is None:
+            self._anim = QPropertyAnimation(self, b"progress")
+            self._anim.setDuration(240)
+            self._anim.setEasingCurve(fluid_easing())
+        return self._anim
 
     def getProgress(self) -> float:
         return self._progress
@@ -174,7 +187,8 @@ class ConfigTagBadge(QWidget):
         if self._compact_text == compact_str and self._expanded_text == expanded_str:
             return
 
-        self._anim.stop()
+        if self._anim is not None:
+            self._anim.stop()
         self._compact_text = compact_str
         self._expanded_text = expanded_str
         self._expanded = False
@@ -211,14 +225,16 @@ class ConfigTagBadge(QWidget):
         target = 1.0 if self._expanded else 0.0
 
         if not animated:
-            self._anim.stop()
+            if self._anim is not None:
+                self._anim.stop()
             self.setProgress(target)
             return
 
-        self._anim.stop()
-        self._anim.setStartValue(self._progress)
-        self._anim.setEndValue(target)
-        self._anim.start()
+        anim = self._get_anim()
+        anim.stop()
+        anim.setStartValue(self._progress)
+        anim.setEndValue(target)
+        anim.start()
 
     def enterEvent(self, event):
         self._hovered = True

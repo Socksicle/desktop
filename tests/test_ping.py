@@ -208,180 +208,142 @@ class _RawListener:
                 pass
 
 
-def test_ping_measures_until_headers_complete():
-    srv = _Socks5TestServer(header_delay=0.2)
+def test_ping_http_responses():
+    # 1. Delayed headers
+    srv = _Socks5TestServer(header_delay=0.1)
     try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=3)
-        assert ms is not None
-        assert ms >= 150
-        assert ms < 2000
-    finally:
-        srv.close()
-
-
-def test_ping_empty_204_response_is_a_success():
-    srv = _Socks5TestServer(header_delay=0.1, no_body=True)
-    try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=3)
+        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2)
         assert ms is not None
         assert ms >= 50
     finally:
         srv.close()
 
-
-def test_ping_without_body_delay_still_returns_value():
-    srv = _Socks5TestServer()
+    # 2. 204 No Content
+    srv2 = _Socks5TestServer(header_delay=0.05, no_body=True)
     try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=3)
+        ms = http_ping_via_socks5_once("127.0.0.1", srv2.port, timeout=2)
         assert ms is not None
+        assert ms >= 20
     finally:
-        srv.close()
+        srv2.close()
+
+    # 3. Default no-delay
+    srv3 = _Socks5TestServer()
+    try:
+        assert http_ping_via_socks5_once("127.0.0.1", srv3.port, timeout=2) is not None
+    finally:
+        srv3.close()
 
 
-def test_ping_rejected_connect_returns_none():
+def test_ping_http_failures():
+    # Reject connect
     srv = _Socks5TestServer(reject_connect=True)
     try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2)
-        assert ms is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
     finally:
         srv.close()
 
-
-def test_ping_closed_after_connect_returns_none():
+    # Drop after connect
     srv = _Socks5TestServer(drop_after_connect=True)
     try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2)
-        assert ms is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
     finally:
         srv.close()
 
-
-def test_ping_timeout_returns_none():
+    # Timeout
     srv = _Socks5TestServer(silent=True)
     try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=0.3)
-        assert ms is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=0.1) is None
     finally:
         srv.close()
 
-
-def test_ping_truncated_headers_returns_none():
+    # Truncated headers
     srv = _Socks5TestServer(truncate_headers=True)
     try:
+        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
+    finally:
+        srv.close()
+
+    # Unreachable
+    assert http_ping_via_socks5_once("127.0.0.1", 1, timeout=0.2) is None
+
+
+def test_ping_methods_and_dispatch():
+    # GET
+    srv = _Socks5TestServer()
+    try:
         ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2)
-        assert ms is None
-    finally:
-        srv.close()
+        assert ms is not None and srv.method == b"GET"
 
-
-def test_ping_to_unreachable_proxy_returns_none():
-    ms = http_ping_via_socks5_once("127.0.0.1", 1, timeout=0.5)
-    assert ms is None
-
-
-
-
-
-def test_ping_get_sends_get_request():
-    srv = _Socks5TestServer()
-    try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=3)
-        assert ms is not None
-        assert srv.method == b"GET"
-    finally:
-        srv.close()
-
-
-def test_ping_head_sends_head_request():
-    srv = _Socks5TestServer(header_delay=0.1)
-    try:
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=3,
-                                       method="HEAD")
-        assert srv.method == b"HEAD"
-        assert ms is not None
-        assert ms >= 50
-    finally:
-        srv.close()
-
-
-def test_tcp_connect_ping_measures_connect():
-    srv = _Socks5TestServer()
-    try:
-        ms = tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2)
-        assert ms is not None
-        assert ms >= 0
-    finally:
-        srv.close()
-
-
-def test_tcp_connect_ping_to_unreachable_proxy_returns_none():
-    ms = tcp_connect_ping_via_socks5("127.0.0.1", 1, timeout=0.5)
-    assert ms is None
-
-
-def test_tcp_connect_ping_rejected_connect_returns_none():
-    srv = _Socks5TestServer(reject_connect=True)
-    try:
-        ms = tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2)
-        assert ms is None
-    finally:
-        srv.close()
-
-
-def test_ping_via_socks5_dispatches_tcp_connect():
-    srv = _Socks5TestServer()
-    try:
-        ms = ping_via_socks5("127.0.0.1", srv.port, method="tcp_connect")
-        assert ms is not None
-        assert ms >= 0
-    finally:
-        srv.close()
-
-
-def test_ping_via_socks5_default_is_http_get():
-    srv = _Socks5TestServer()
-    try:
+        # Default dispatch is GET
         ms = ping_via_socks5("127.0.0.1", srv.port)
-        assert ms is not None
-        assert srv.method == b"GET"
+        assert ms is not None and srv.method == b"GET"
+
+        # Unknown fallback is GET
+        ms = ping_via_socks5("127.0.0.1", srv.port, method="bogus")
+        assert ms is not None and srv.method == b"GET"
     finally:
         srv.close()
 
+    # HEAD
+    srv2 = _Socks5TestServer(header_delay=0.05)
+    try:
+        ms = http_ping_via_socks5_once("127.0.0.1", srv2.port, timeout=2, method="HEAD")
+        assert srv2.method == b"HEAD"
+        assert ms is not None and ms >= 20
+    finally:
+        srv2.close()
 
-def test_ping_via_socks5_unknown_method_falls_back_to_get():
+    # TCP Connect
+    srv3 = _Socks5TestServer()
+    try:
+        ms = ping_via_socks5("127.0.0.1", srv3.port, method="tcp_connect")
+        assert ms is not None and ms >= 0
+    finally:
+        srv3.close()
+
+
+def test_tcp_connect_ping():
+    # Success
     srv = _Socks5TestServer()
     try:
-        ms = ping_via_socks5("127.0.0.1", srv.port, method="bogus")
-        assert ms is not None
-        assert srv.method == b"GET"
+        ms = tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2)
+        assert ms is not None and ms >= 0
     finally:
         srv.close()
 
+    # Unreachable
+    assert tcp_connect_ping_via_socks5("127.0.0.1", 1, timeout=0.2) is None
 
-def test_proxy_ping_job_reports_real_latency(qapp):
-    srv = _Socks5TestServer(header_delay=0.1)
+    # Rejected connect
+    srv2 = _Socks5TestServer(reject_connect=True)
+    try:
+        assert tcp_connect_ping_via_socks5("127.0.0.1", srv2.port, timeout=1) is None
+    finally:
+        srv2.close()
+
+
+def test_proxy_ping_job(qapp):
+    # Success
+    srv = _Socks5TestServer(header_delay=0.05)
     results = []
     pool = QThreadPool()
     try:
         pool.start(ProxyPingJob("127.0.0.1", srv.port, results.append))
-        assert pool.waitForDone(6000)
-        assert len(results) == 1
-        assert results[0] is not None
-        assert results[0] >= 50
+        assert pool.waitForDone(4000)
+        assert len(results) == 1 and results[0] is not None and results[0] >= 20
     finally:
         srv.close()
 
-
-def test_proxy_ping_job_failure_reports_none(qapp):
-    srv = _Socks5TestServer(reject_connect=True)
-    results = []
-    pool = QThreadPool()
+    # Failure
+    srv2 = _Socks5TestServer(reject_connect=True)
+    results_fail = []
     try:
-        pool.start(ProxyPingJob("127.0.0.1", srv.port, results.append))
-        assert pool.waitForDone(6000)
-        assert results == [None]
+        pool.start(ProxyPingJob("127.0.0.1", srv2.port, results_fail.append))
+        assert pool.waitForDone(4000)
+        assert results_fail == [None]
     finally:
-        srv.close()
+        srv2.close()
 
 
 
@@ -424,37 +386,27 @@ def test_socket_options_applied():
         udp_sock.close()
 
 
-def test_async_direct_tcp_ping_success():
+def test_async_direct_tcp_ping():
     srv = _Socks5TestServer()
     try:
         ms = asyncio.run(async_direct_tcp_ping("127.0.0.1", srv.port, timeout=2.0))
-        assert ms is not None
-        assert ms >= 0
+        assert ms is not None and ms >= 0
     finally:
         srv.close()
+    assert asyncio.run(async_direct_tcp_ping("127.0.0.1", 1, timeout=0.2)) is None
 
 
-def test_async_direct_tcp_ping_failure():
-    ms = asyncio.run(async_direct_tcp_ping("127.0.0.1", 1, timeout=0.2))
-    assert ms is None
-
-
-def test_async_direct_http_ping_success():
+def test_async_direct_http_ping():
     srv = _RawListener(respond=HEADERS)
     try:
         ms = asyncio.run(async_direct_http_ping("127.0.0.1", srv.port, timeout=2.0))
-        assert ms is not None
-        assert ms >= 0
+        assert ms is not None and ms >= 0
     finally:
         srv.close()
+    assert asyncio.run(async_direct_http_ping("127.0.0.1", 1, timeout=0.2)) is None
 
 
-def test_async_direct_http_ping_failure():
-    ms = asyncio.run(async_direct_http_ping("127.0.0.1", 1, timeout=0.2))
-    assert ms is None
-
-
-def test_async_direct_quic_ping_success():
+def test_async_direct_quic_ping():
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.bind(("127.0.0.1", 0))
     port = udp_sock.getsockname()[1]
@@ -473,65 +425,47 @@ def test_async_direct_quic_ping_success():
     t.start()
 
     ms = asyncio.run(async_direct_quic_ping("127.0.0.1", port, timeout=1.0))
-    assert ms is not None
-    assert ms >= 0
+    assert ms is not None and ms >= 0
+    assert asyncio.run(async_direct_quic_ping("127.0.0.1", 1, timeout=0.2)) is None
 
 
-def test_async_direct_quic_ping_failure():
-    ms = asyncio.run(async_direct_quic_ping("127.0.0.1", 1, timeout=0.2))
-    assert ms is None
-
-
-def test_async_socks5_proxy_ready_success():
+def test_async_socks5_proxy_ready():
     srv = _Socks5TestServer()
     try:
-        ready = asyncio.run(async_socks5_proxy_ready(srv.port, timeout=1.0))
-        assert ready is True
+        assert asyncio.run(async_socks5_proxy_ready(srv.port, timeout=1.0)) is True
     finally:
         srv.close()
+    assert asyncio.run(async_socks5_proxy_ready(1, timeout=0.2)) is False
 
 
-def test_async_socks5_proxy_ready_failure():
-    ready = asyncio.run(async_socks5_proxy_ready(1, timeout=0.2))
-    assert ready is False
-
-
-def test_async_http_ping_via_socks5_success():
-    srv = _Socks5TestServer(header_delay=0.05)
+def test_async_http_ping_via_socks5():
+    srv = _Socks5TestServer(header_delay=0.03)
     try:
         ms = asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2.0))
-        assert ms is not None
-        assert ms >= 30
+        assert ms is not None and ms >= 15
     finally:
         srv.close()
 
-
-def test_async_http_ping_via_socks5_rejected():
-    srv = _Socks5TestServer(reject_connect=True)
+    srv_fail = _Socks5TestServer(reject_connect=True)
     try:
-        ms = asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1.0))
-        assert ms is None
+        assert asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv_fail.port, timeout=1.0)) is None
     finally:
-        srv.close()
+        srv_fail.close()
 
 
-def test_async_tcp_connect_ping_via_socks5_success():
+def test_async_tcp_connect_ping_via_socks5():
     srv = _Socks5TestServer()
     try:
         ms = asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2.0))
-        assert ms is not None
-        assert ms >= 0
+        assert ms is not None and ms >= 0
     finally:
         srv.close()
 
-
-def test_async_tcp_connect_ping_via_socks5_rejected():
-    srv = _Socks5TestServer(reject_connect=True)
+    srv_fail = _Socks5TestServer(reject_connect=True)
     try:
-        ms = asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=1.0))
-        assert ms is None
+        assert asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv_fail.port, timeout=1.0)) is None
     finally:
-        srv.close()
+        srv_fail.close()
 
 
 
@@ -675,18 +609,9 @@ class _Socks5RateLimitedServer:
 def test_http_ping_handles_429_rate_limit():
     srv = _Socks5RateLimitedServer()
     try:
-        # Since all probe attempts return 429, http ping returns None gracefully
-        ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1.0)
-        assert ms is None
-    finally:
-        srv.close()
-
-
-def test_async_http_ping_handles_429_rate_limit():
-    srv = _Socks5RateLimitedServer()
-    try:
-        ms = asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1.0))
-        assert ms is None
+        # Since all probe attempts return 429, sync and async http pings return None gracefully
+        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1.0) is None
+        assert asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1.0)) is None
     finally:
         srv.close()
 

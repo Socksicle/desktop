@@ -72,7 +72,7 @@ class ServerManager:
                         "engine": "auto", "ping_method": DEFAULT_PING_METHOD,
                         "tun_mode": False, "theme_preset": "dynamic", "language": "ru",
                         "show_active_server_card": False, "show_ip_card": False,
-                        "show_flags": False, "render_backend": "auto"}
+                        "show_flags": False}
 
         return settings
 

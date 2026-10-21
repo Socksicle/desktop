@@ -89,9 +89,12 @@ def test_native_bar_takes_no_space(qapp):
     assert scroll.viewport().geometry().width() >= scroll.width() - 2
 
 
-def test_container_mask_applied(main_win, qapp):
+def test_container_has_no_raster_mask(main_win, qapp):
     win = main_win
     win.show()
     qapp.processEvents()
     win._layout_overlays()
-    assert win.container.mask().isEmpty() is False
+    # Corners are anti-aliased by the stylesheet; a 1-bit mask would reintroduce
+    # jagged edges.
+    assert win.container.mask().isEmpty() is True
+    assert win.mask().isEmpty() is True

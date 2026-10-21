@@ -1,78 +1,151 @@
-SOCKSICLE - ЛИЦЕНЗИИ И УВЕДОМЛЕНИЯ СТОРОННЕГО ПО
+SOCKSICLE DESKTOP - ЛИЦЕНЗИИ И УВЕДОМЛЕНИЯ СТОРОННЕГО ПО
 =============================================================
 
-Настоящее приложение использует библиотеки и компоненты с открытым
-исходным кодом (Open Source). В данном документе приведены сведения
-об авторских правах, используемых компонентах и применимых лицензиях.
+Socksicle Desktop является свободным программным обеспечением с открытым
+исходным кодом, распространяемым на условиях лицензии MIT.
+
+Приложение включает в себя и взаимодействует с компонентами, библиотеками
+и сетевыми ядрами сторонних разработчиков. Ниже приведены сведения об
+авторских правах, компонентах и применимых лицензиях.
 
 
-1. sing-box-lx
+1. Socksicle Desktop (Основное приложение)
 -------------------------------------------------------------
-Компонент: sing-box-lx core library (libbox.aar)
-Репозиторий: https://github.com/Leadaxe/sing-box-lx
-Базовый проект: https://github.com/SagerNet/sing-box
-Авторские права:
-Copyright (C) 2022-2024 SagerNet
-Copyright (C) Leadaxe и участники разработки
+Репозиторий: https://github.com/socksicle/desktop
+Авторские права: Copyright (C) 2024-2026 Socksicle Desktop Contributors
+Лицензия: MIT License
+Текст лицензии:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+2. sing-box (Маршрутизирующее ядро)
+-------------------------------------------------------------
+Компонент: sing-box (https://github.com/SagerNet/sing-box)
+Авторские права: Copyright (C) 2022-2026 SagerNet and contributors
 Лицензия: GNU General Public License v3.0 (GPL-3.0)
 
-sing-box-lx является свободным программным обеспечением. Вы можете
+sing-box является свободным программным обеспечением: вы можете
 распространять и/или изменять его в соответствии с условиями лицензии
 GNU General Public License v3.0, опубликованной Free Software Foundation.
+Исходный код ядра sing-box доступен по адресу:
+https://github.com/SagerNet/sing-box
 
-Исходный код sing-box-lx доступен по адресу:
-https://github.com/Leadaxe/sing-box-lx
+
+3. Xray-core (Маршрутизирующее ядро)
+-------------------------------------------------------------
+Компонент: Xray-core (https://github.com/XTLS/Xray-core)
+Авторские права: Copyright (C) 2019-2026 XTLS and contributors
+Лицензия: Mozilla Public License 2.0 (MPL-2.0)
+
+Исходный код ядра Xray-core доступен по адресу:
+https://github.com/XTLS/Xray-core
 
 
-2. Библиотеки AndroidX
+4. Wintun (Драйвер сетевого адаптера TUN для Windows)
+-------------------------------------------------------------
+Компонент: Wintun (wintun.dll)
+Сайт проекта: https://www.wintun.net
+Авторские права: Copyright (C) 2018-2026 Jason A. Donenfeld. All Rights Reserved.
+Лицензия: MIT License / Wintun License
+
+
+5. PySide6 / Qt 6 (Графический интерфейс)
+-------------------------------------------------------------
+Компонент: PySide6 (Qt for Python)
+Сайт проекта: https://wiki.qt.io/Qt_for_Python
+Авторские права: Copyright (C) 2026 The Qt Company Ltd. and other contributors
+Лицензия: GNU Lesser General Public License v3.0 (LGPL-3.0) / GPL-3.0
+
+
+6. cryptography
+-------------------------------------------------------------
+Компонент: cryptography (https://github.com/pyca/cryptography)
+Авторские права: Copyright (c) Individual contributors
+Лицензия: Apache License, Version 2.0 / BSD 3-Clause License
+
+
+7. PySocks
+-------------------------------------------------------------
+Компонент: PySocks (https://github.com/Anorov/PySocks)
+Авторские права: Copyright (c) 2013-2026 Anorov
+Лицензия: BSD 3-Clause License
+
+
+8. python-qrcode & Pillow
 -------------------------------------------------------------
 Компоненты:
-- androidx.core:core-ktx:1.15.0
-- androidx.appcompat:appcompat:1.7.0
-- androidx.constraintlayout:constraintlayout:2.2.1
-- androidx.recyclerview:recyclerview:1.4.0
-- androidx.work:work-runtime-ktx:2.10.1
-Авторские права: Copyright (C) The Android Open Source Project
-Лицензия: Apache License, Version 2.0
-Сайт проекта: https://developer.android.com/jetpack/androidx
+- qrcode (https://github.com/lincolnloop/python-qrcode)
+  Copyright (c) 2011, Lincoln Loop (BSD 3-Clause License)
+- Pillow (https://github.com/python-pillow/Pillow)
+  Copyright (c) 2010-2026 by Jeffrey A. Clark (Alex) and contributors
+  Copyright (c) 1997-2011 by Secret Labs AB
+  Copyright (c) 1995-2011 by Fredrik Lundh (HPND License)
 
 
-3. Material Components for Android
+9. Графические ресурсы, флаги и шрифты
 -------------------------------------------------------------
-Компонент: com.google.android.material:material:1.12.0
-Авторские права: Copyright (C) Google LLC
-Лицензия: Apache License, Version 2.0
-Репозиторий: https://github.com/material-components/material-components-android
-
-
-4. Стандартная библиотека Kotlin
--------------------------------------------------------------
-Компонент: org.jetbrains.kotlin:kotlin-stdlib
-Авторские права: Copyright (C) 2010-2024 JetBrains s.r.o. и участники языка Kotlin
-Лицензия: Apache License, Version 2.0
-Репозиторий: https://github.com/JetBrains/kotlin
+- Material Design Icons: Copyright (C) Google LLC, Apache License 2.0
+- Noto Color Emoji: Copyright (C) Google LLC, SIL Open Font License 1.1
+- Флаги стран: Public Domain / Creative Commons (SVG-ресурсы)
 
 
 =============================================================
 КРАТКОЕ ОПИСАНИЕ УСЛОВИЙ ЛИЦЕНЗИЙ
 =============================================================
 
-1. Лицензия Apache 2.0 (Apache License, Version 2.0)
+1. Лицензия MIT (MIT License)
+Предоставляет право свободного использования, копирования, изменения,
+объединения, публикации, распространения, сублицензирования и продажи
+копий программного обеспечения при условии сохранения уведомления об
+авторских правах. Предоставляется "КАК ЕСТЬ", без гарантий любого рода.
+Официальный текст: https://opensource.org/licenses/MIT
+
+2. Лицензия Apache 2.0 (Apache License, Version 2.0)
 Разрешает свободное использование, модификацию и распространение
-кода как в открытых, так и в проприетарных проектах при обязательном
-сохранении уведомлений об авторских правах и текста лицензии.
-Предоставляется по принципу "КАК ЕСТЬ" ("AS IS"), без гарантий любого рода.
-Официальный текст лицензии доступен по адресу:
-http://www.apache.org/licenses/LICENSE-2.0
+кода в открытых и проприетарных проектах при обязательном сохранении
+уведомлений об авторских правах и текстов лицензий.
+Официальный текст: http://www.apache.org/licenses/LICENSE-2.0
 
-2. Лицензия GNU General Public License v3.0 (GPL-3.0)
-Является строгой копилефт-лицензией. Разрешает использование,
-модификацию и распространение при условии, что любые производные
-работы или программы, включающие данный код, распространяются
-на тех же условиях с предоставлением полного исходного кода.
-Официальный текст лицензии доступен по адресу:
-https://www.gnu.org/licenses/gpl-3.0.html
+3. Лицензия GNU General Public License v3.0 (GPL-3.0)
+Строгая копилефт-лицензия. Требует, чтобы любые производные работы,
+включающие данный код, распространялись на тех же условиях с открытием
+полного исходного кода.
+Официальный текст: https://www.gnu.org/licenses/gpl-3.0.html
 
-Примечание: Юридически обязывающими являются оригинальные тексты
-лицензий на английском языке, приведенные в файле THIRD_PARTY_LICENSES_EN.txt
-и официальных репозиториях проектов.
+4. Лицензия GNU Lesser General Public License v3.0 (LGPL-3.0)
+Разрешает динамическое связывание библиотеки с программами под иными
+лицензиями при условии предоставления пользователю возможности замены
+или обновления компонентов библиотеки.
+Официальный текст: https://www.gnu.org/licenses/lgpl-3.0.html
+
+5. Лицензия Mozilla Public License 2.0 (MPL-2.0)
+Копилефт-лицензия на уровне отдельных файлов. Изменения в файлах под MPL
+должны оставаться открытыми, при этом проект в целом может объединяться
+с кодом под другими лицензиями.
+Официальный текст: https://www.mozilla.org/MPL/2.0/
+
+6. Лицензия BSD 3-Clause (BSD-3-Clause)
+Разрешает распространение и использование в исходной и двоичной формах
+с изменениями или без них при условии сохранения уведомления об авторских
+правах и отказа от использования имен авторов для продвижения продуктов.
+Официальный текст: https://opensource.org/licenses/BSD-3-Clause
+
+Примечание: Юридически обязывающими являются оригинальные тексты лицензий
+на английском языке, приведенные в англоязычном разделе лицензий
+(licenses_en.txt) и в репозиториях соответствующих проектов.

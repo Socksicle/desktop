@@ -8,7 +8,7 @@ In search mode, capsule displays an embedded search input and clear button.
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLineEdit, QPushButton, QLabel
+    QWidget, QHBoxLayout, QLineEdit, QPushButton, QLabel, QGraphicsOpacityEffect
 )
 from PySide6.QtCore import (
     Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QRectF, QPointF
@@ -51,11 +51,10 @@ class TaskbarCapsule(QWidget):
         self._indicator_anim.setDuration(220)
         self._indicator_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        # Same morph as the config badges: width interpolates with fluid_easing()
-        # while the search content slides in and the nav icons fade out.
         self._search_anim = QPropertyAnimation(self, b"search_progress")
         self._search_anim.setDuration(240)
         self._search_anim.setEasingCurve(fluid_easing())
+        self._search_anim.finished.connect(self._on_search_anim_finished)
 
         # Embedded search UI (shown when search is open)
         self.search_widget = QWidget(self)
@@ -85,6 +84,9 @@ class TaskbarCapsule(QWidget):
         sw_lay.addWidget(self.search_clear_btn, 0, Qt.AlignVCenter)
 
         self.search_widget.hide()
+        self.search_opacity_effect = QGraphicsOpacityEffect(self.search_widget)
+        self.search_widget.setGraphicsEffect(self.search_opacity_effect)
+        self.search_opacity_effect.setOpacity(0.0)
         if theme:
             self.apply_theme(theme)
 
@@ -97,6 +99,8 @@ class TaskbarCapsule(QWidget):
 
     indicator_x = Property(float, get_indicator_x, set_indicator_x)
 
+    _FADE_SPLIT = 0.35
+
     def get_search_progress(self) -> float:
         return self._search_progress
 
@@ -107,13 +111,27 @@ class TaskbarCapsule(QWidget):
         self._search_progress = p
         width = int(round(self._NORMAL_WIDTH + (self._SEARCH_WIDTH - self._NORMAL_WIDTH) * p))
         self.setFixedWidth(width)
-        # Keep the content's right edge on the capsule's right edge so it slides
-        # out from the search button slot and is clipped while the capsule grows.
-        self.search_widget.setGeometry(width - self._SEARCH_WIDTH, 0, self._SEARCH_WIDTH, 64)
-        if p > 0.0:
-            self.search_widget.show()
+        self.search_widget.setGeometry(0, 0, width, 64)
+
+        # Staggered smoothstep cross-fade: icons fade out completely by _FADE_SPLIT (0.35)
+        # and search content fades in only after _FADE_SPLIT. Both curves arrive at
+        # _FADE_SPLIT with derivative 0, eliminating any speed bump or stumble.
+        if p <= self._FADE_SPLIT:
+            search_op = 0.0
         else:
-            self.search_widget.hide()
+            t = (p - self._FADE_SPLIT) / (1.0 - self._FADE_SPLIT)
+            search_op = t * t * (3.0 - 2.0 * t)
+
+        if hasattr(self, "search_opacity_effect"):
+            self.search_opacity_effect.setOpacity(search_op)
+
+        if p > self._FADE_SPLIT:
+            if self.search_widget.isHidden():
+                self.search_widget.show()
+        elif p <= 0.001:
+            if not self.search_widget.isHidden():
+                self.search_widget.hide()
+
         self.update()
         self.searchProgressChanged.emit(p)
 
@@ -141,7 +159,13 @@ class TaskbarCapsule(QWidget):
         self._search_open = bool(open_)
         target = 1.0 if self._search_open else 0.0
 
+        if not self._search_open:
+            self.search_input.clearFocus()
+            self.search_input.clear()
+
         if animated:
+            if self._search_open:
+                self.search_widget.show()
             self._search_anim.stop()
             self._search_anim.setStartValue(self._search_progress)
             self._search_anim.setEndValue(target)
@@ -149,10 +173,17 @@ class TaskbarCapsule(QWidget):
         else:
             self._search_anim.stop()
             self.set_search_progress(target)
+            if self._search_open:
+                self.search_widget.show()
+                self.search_input.setFocus()
+            else:
+                self.search_widget.hide()
 
+    def _on_search_anim_finished(self):
         if self._search_open:
             self.search_input.setFocus()
         else:
+            self.search_widget.hide()
             self.search_input.clear()
 
     def _on_clear_clicked(self):
@@ -197,7 +228,10 @@ class TaskbarCapsule(QWidget):
         painter.setBrush(QBrush(QColor(bg_hex)))
         painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), radius - 0.5, radius - 0.5)
 
-        icons_alpha = 1.0 - self._search_progress
+        if self._search_progress >= self._FADE_SPLIT:
+            return
+        t_icon = self._search_progress / self._FADE_SPLIT
+        icons_alpha = max(0.0, 1.0 - t_icon * t_icon * (3.0 - 2.0 * t_icon))
         if icons_alpha <= 0.01:
             return
         if icons_alpha < 0.999:

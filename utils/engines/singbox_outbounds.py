@@ -42,8 +42,13 @@ def _server_name(server) -> str:
 
 
 def _tls_insecure(server) -> bool:
-    """Explicit per-server TLS verification opt-out (imported link flag)."""
-    return bool(getattr(server, "allow_insecure", False) or getattr(server, "insecure", False))
+    """Explicit per-server TLS verification opt-out (imported link flag or pinned cert on older core)."""
+    return bool(
+        getattr(server, "allow_insecure", False)
+        or getattr(server, "insecure", False)
+        or getattr(server, "pinned_peer_cert_sha256", False)
+        or getattr(server, "pcs", False)
+    )
 
 
 def _tls_alpn(transport_type: str) -> list[str] | None:
@@ -281,7 +286,9 @@ def _build_singbox_trojan_outbound(server) -> dict:
         "password": getattr(server, "password", "") or "",
         "multiplex": {"enabled": False},
     }
-    outbound["tls"] = _v2ray_tls(server)
+    sec = (getattr(server, "security", "tls") or "tls").lower()
+    if sec != "none":
+        outbound["tls"] = _v2ray_tls(server)
 
     transport = _build_singbox_transport(server)
     if transport:

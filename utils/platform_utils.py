@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shlex
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -20,9 +21,21 @@ from .i18n import tr
 log = logging.getLogger(__name__)
 
 
+def is_frozen() -> bool:
+    """Return True if running in a compiled/frozen binary (Nuitka, PyInstaller, etc.)."""
+    if getattr(sys, "frozen", False):
+        return True
+    if "__compiled__" in globals() or hasattr(sys.modules.get(__name__), "__compiled__"):
+        return True
+    exe_name = Path(sys.executable).name.lower()
+    if exe_name.startswith("python") or exe_name.startswith("pytest"):
+        return False
+    return True
+
+
 def get_app_dir() -> Path:
     """Application directory (where engine binaries are bundled when frozen)."""
-    if getattr(sys, "frozen", False):
+    if is_frozen():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
@@ -38,16 +51,18 @@ def is_linux() -> bool:
 @functools.lru_cache(maxsize=1)
 def get_real_app_version() -> str:
     """Retrieve actual application version from pyproject.toml or package metadata."""
-    base_ver = "0.1-rc.1"
-    try:
-        toml_path = get_app_dir() / "pyproject.toml"
-        if toml_path.is_file():
-            content = toml_path.read_text(encoding="utf-8")
-            m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
-            if m:
-                return m.group(1)
-    except (OSError, ValueError, UnicodeDecodeError) as e:
-        log.debug("App version from pyproject.toml unavailable: %s", e)
+    base_ver = "0.1.1"
+    for candidate in (get_app_dir() / "pyproject.toml",
+                      Path(__file__).resolve().parent.parent / "pyproject.toml",
+                      Path.cwd() / "pyproject.toml"):
+        try:
+            if candidate.is_file():
+                content = candidate.read_text(encoding="utf-8")
+                m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
+                if m:
+                    return m.group(1)
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            log.debug("App version from %s unavailable: %s", candidate, e)
 
     try:
         from importlib.metadata import version
@@ -63,6 +78,21 @@ def get_socksicle_user_agent() -> str:
     ver = get_real_app_version()
     os_name = "windows" if is_windows() else ("linux" if is_linux() else sys.platform.lower())
     return f"socksicle/{ver}/{os_name}"
+
+
+def get_real_device_name() -> str:
+    """Return the local device name without reading BIOS or DMI identifiers.
+
+    DMI product names often expose the motherboard model, so the hostname is
+    the only source used here.
+    """
+    try:
+        name = os.environ.get("COMPUTERNAME") if is_windows() else ""
+        name = (name or socket.gethostname() or platform.node()).strip()
+    except OSError as e:
+        log.debug("Device name probe failed: %s", e)
+        return "PC"
+    return name or "PC"
 
 
 def get_config_dir() -> Path:

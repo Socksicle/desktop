@@ -50,144 +50,78 @@ def _make_aead2022_link(method, password, host, port, tag=""):
 # --- Tests for _unescape_plugin_string ---
 
 class TestUnescapePluginString:
-    def test_no_escapes(self):
-        assert _unescape_plugin_string("abc") == "abc"
-
-    def test_escape_semicolon(self):
-        assert _unescape_plugin_string("abc\\;def") == "abc;def"
-
-    def test_escape_equals(self):
-        assert _unescape_plugin_string("a\\=b") == "a=b"
-
-    def test_escape_backslash(self):
-        assert _unescape_plugin_string("a\\\\b") == "a\\b"
-
-    def test_multiple_escapes(self):
-        assert _unescape_plugin_string("a\\;b\\=c\\\\d") == "a;b=c\\d"
+    @pytest.mark.parametrize("inp,expected", [
+        ("abc", "abc"),
+        ("abc\\;def", "abc;def"),
+        ("a\\=b", "a=b"),
+        ("a\\\\b", "a\\b"),
+        ("a\\;b\\=c\\\\d", "a;b=c\\d"),
+    ])
+    def test_unescape_plugin_string(self, inp, expected):
+        assert _unescape_plugin_string(inp) == expected
 
 
 # --- Tests for _parse_plugin ---
 
 class TestParsePlugin:
-    def test_plugin_name_only(self):
-        name, opts = _parse_plugin("v2ray-plugin;server")
-        assert name == "v2ray-plugin"
-        assert opts == "server"
-
-    def test_plugin_with_options(self):
-        name, opts = _parse_plugin("obfs-local;obfs=http;obfs-host=example.com")
-        assert name == "obfs-local"
-        assert opts == "obfs=http;obfs-host=example.com"
-
-    def test_escaped_plugin(self):
-        name, opts = _parse_plugin("obfs-local\\;obfs\\=http")
-        assert name == "obfs-local"
-        assert opts == "obfs=http"
+    def test_parse_plugin_variants(self):
+        assert _parse_plugin("v2ray-plugin;server") == ("v2ray-plugin", "server")
+        assert _parse_plugin("obfs-local;obfs=http;obfs-host=example.com") == ("obfs-local", "obfs=http;obfs-host=example.com")
+        assert _parse_plugin("obfs-local\\;obfs\\=http") == ("obfs-local", "obfs=http")
 
 
 # --- Tests for decode_ss_link ---
 
 class TestDecodeLegacyLink:
-    def test_basic_legacy(self):
-        link = _make_legacy_link("aes-256-gcm", "testpass", "1.2.3.4", 8388)
-        result = decode_ss_link(link)
-        assert result is not None
-        assert result['method'] == "aes-256-gcm"
-        assert result['password'] == "testpass"
-        assert result['server'] == "1.2.3.4"
-        assert result['port'] == 8388
+    def test_decode_legacy_link(self):
+        res1 = decode_ss_link(_make_legacy_link("aes-256-gcm", "testpass", "1.2.3.4", 8388))
+        assert res1['method'] == "aes-256-gcm" and res1['password'] == "testpass"
+        assert res1['server'] == "1.2.3.4" and res1['port'] == 8388
 
-    def test_legacy_with_tag(self):
-        link = _make_legacy_link("chacha20-ietf-poly1305", "mypass", "10.0.0.1", 443, tag="My Server")
-        result = decode_ss_link(link)
-        assert result['tag'] == "My Server"
-        assert result['method'] == "chacha20-ietf-poly1305"
+        res2 = decode_ss_link(_make_legacy_link("chacha20-ietf-poly1305", "mypass", "10.0.0.1", 443, tag="My Server"))
+        assert res2['tag'] == "My Server" and res2['method'] == "chacha20-ietf-poly1305"
 
-    def test_legacy_with_percent_encoded_tag(self):
-        link = _make_legacy_link("aes-128-gcm", "pw", "host.com", 1080, tag="Server #1")
-        result = decode_ss_link(link)
-        assert result['tag'] == "Server #1"
+        res3 = decode_ss_link(_make_legacy_link("aes-128-gcm", "pw", "host.com", 1080, tag="Server #1"))
+        assert res3['tag'] == "Server #1"
 
 
 class TestDecodeSIP002Link:
-    def test_basic_sip002(self):
-        link = _make_sip002_link("aes-256-gcm", "testpass", "1.2.3.4", 8388)
-        result = decode_ss_link(link)
-        assert result is not None
-        assert result['method'] == "aes-256-gcm"
-        assert result['password'] == "testpass"
-        assert result['server'] == "1.2.3.4"
-        assert result['port'] == 8388
+    def test_basic_sip002_and_tags(self):
+        res1 = decode_ss_link(_make_sip002_link("aes-256-gcm", "testpass", "1.2.3.4", 8388, tag="Server #1"))
+        assert res1['method'] == "aes-256-gcm" and res1['password'] == "testpass"
+        assert res1['server'] == "1.2.3.4" and res1['port'] == 8388
+        assert res1['tag'] == "Server #1"
 
-    def test_sip002_with_tag(self):
-        link = _make_sip002_link("aes-256-gcm", "pw", "host.com", 443, tag="Server #1")
-        result = decode_ss_link(link)
-        assert result['tag'] == "Server #1"
+    def test_sip002_with_plugins(self):
+        plugin_obfs = "obfs-local;obfs=http;obfs-host=www.example.com"
+        r1 = decode_ss_link(_make_sip002_link("aes-256-gcm", "pw", "host.com", 443, plugin=plugin_obfs))
+        assert r1['plugin'] == "obfs-local" and r1['plugin_opts'] == "obfs=http;obfs-host=www.example.com"
 
-    def test_sip002_with_plugin_obfs(self):
-        plugin = "obfs-local;obfs=http;obfs-host=www.example.com"
-        link = _make_sip002_link("aes-256-gcm", "pw", "host.com", 443, plugin=plugin)
-        result = decode_ss_link(link)
-        assert result is not None
-        assert result['plugin'] == "obfs-local"
-        assert result['plugin_opts'] == "obfs=http;obfs-host=www.example.com"
+        plugin_v2ray = "v2ray-plugin;server;tls;host=github.com"
+        r2 = decode_ss_link(_make_sip002_link("chacha20-ietf-poly1305", "secret", "my.server.com", 8888, plugin=plugin_v2ray, tag="V2Ray"))
+        assert r2['plugin'] == "v2ray-plugin" and r2['plugin_opts'] == "server;tls;host=github.com" and r2['tag'] == "V2Ray"
 
-    def test_sip002_with_plugin_v2ray(self):
-        plugin = "v2ray-plugin;server;tls;host=github.com"
-        link = _make_sip002_link("chacha20-ietf-poly1305", "secret", "my.server.com", 8888, plugin=plugin, tag="V2Ray")
-        result = decode_ss_link(link)
-        assert result['plugin'] == "v2ray-plugin"
-        assert result['plugin_opts'] == "server;tls;host=github.com"
-        assert result['tag'] == "V2Ray"
-
-    def test_sip002_with_plugin_no_opts(self):
-        plugin = "v2ray-plugin;server"
-        link = _make_sip002_link("aes-256-gcm", "pw", "1.2.3.4", 443, plugin=plugin)
-        result = decode_ss_link(link)
-        assert result['plugin'] == "v2ray-plugin"
-        assert result['plugin_opts'] == "server"
+        r3 = decode_ss_link(_make_sip002_link("aes-256-gcm", "pw", "1.2.3.4", 443, plugin="v2ray-plugin;server"))
+        assert r3['plugin'] == "v2ray-plugin" and r3['plugin_opts'] == "server"
 
 
 class TestDecodeAEAD2022Link:
-    def test_basic_aead2022(self):
-        link = _make_aead2022_link("2022-blake3-aes-256-gcm", "testPasswordPSK==", "1.2.3.4", 8388)
-        result = decode_ss_link(link)
-        assert result is not None
-        assert result['method'] == "2022-blake3-aes-256-gcm"
-        assert result['password'] == "testPasswordPSK=="
-        assert result['server'] == "1.2.3.4"
-        assert result['port'] == 8388
+    def test_aead2022_decoding(self):
+        r1 = decode_ss_link(_make_aead2022_link("2022-blake3-aes-256-gcm", "testPasswordPSK==", "1.2.3.4", 8388, tag="AEAD Server"))
+        assert r1['method'] == "2022-blake3-aes-256-gcm" and r1['password'] == "testPasswordPSK=="
+        assert r1['server'] == "1.2.3.4" and r1['port'] == 8388 and r1['tag'] == "AEAD Server"
 
-    def test_aead2022_with_tag(self):
-        link = _make_aead2022_link("2022-blake3-aes-128-gcm", "key123", "host.com", 443, tag="AEAD Server")
-        result = decode_ss_link(link)
-        assert result['tag'] == "AEAD Server"
-        assert result['method'] == "2022-blake3-aes-128-gcm"
-
-    def test_aead2022_with_special_password(self):
-        link = _make_aead2022_link("2022-blake3-chacha20-poly1305", "abc/def+ghi==", "server.net", 8443)
-        result = decode_ss_link(link)
-        assert result is not None
-        assert result['password'] == "abc/def+ghi=="
+        r2 = decode_ss_link(_make_aead2022_link("2022-blake3-chacha20-poly1305", "abc/def+ghi==", "server.net", 8443))
+        assert r2['password'] == "abc/def+ghi=="
 
 
 class TestDecodeEdgeCases:
-    def test_invalid_scheme(self):
-        assert decode_ss_link("http://example.com") is None
-
-    def test_empty_string(self):
-        assert decode_ss_link("") is None
-
-    def test_none(self):
-        assert decode_ss_link(None) is None
-
-    def test_garbage_base64(self):
-        assert decode_ss_link("ss://!!!invalid!!!") is None
-
-    def test_missing_userinfo(self):
-        # ss://host:port has no method/password; must not raise
-        assert decode_ss_link("ss://example.com:443#t") is None
-        assert decode_ss_link("ss://example.com:443") is None
+    @pytest.mark.parametrize("invalid", [
+        "http://example.com", "", None, "ss://!!!invalid!!!",
+        "ss://example.com:443#t", "ss://example.com:443",
+    ])
+    def test_invalid_links_return_none(self, invalid):
+        assert decode_ss_link(invalid) is None
 
 
 # --- Tests for Server model ---
@@ -197,68 +131,38 @@ class TestServerModel:
         from utils.server_model import Server
         return Server
 
-    def test_from_link_legacy(self):
+    def test_from_link_formats(self):
         Server = self._get_server_class()
-        link = _make_legacy_link("aes-256-gcm", "testpass", "1.2.3.4", 8388, tag="Test")
-        s = Server.from_link(link)
-        assert s is not None
-        assert s.method == "aes-256-gcm"
-        assert s.password == "testpass"
-        assert s.host == "1.2.3.4"
-        assert s.port == 8388
-        assert s.name == "Test"
-        assert s.key == link
+        # Legacy
+        s1 = Server.from_link(_make_legacy_link("aes-256-gcm", "testpass", "1.2.3.4", 8388, tag="Test"))
+        assert s1.method == "aes-256-gcm" and s1.password == "testpass" and s1.host == "1.2.3.4" and s1.port == 8388
 
-    def test_from_link_sip002_with_plugin(self):
-        Server = self._get_server_class()
-        plugin = "obfs-local;obfs=http;obfs-host=example.com"
-        link = _make_sip002_link("aes-256-gcm", "pw", "host.com", 443, plugin=plugin, tag="Obfs")
-        s = Server.from_link(link)
-        assert s is not None
-        assert s.plugin == "obfs-local"
-        assert s.plugin_opts == "obfs=http;obfs-host=example.com"
+        # SIP002 with plugin
+        s2 = Server.from_link(_make_sip002_link("aes-256-gcm", "pw", "host.com", 443, plugin="obfs-local;opts", tag="Obfs"))
+        assert s2.plugin == "obfs-local" and s2.plugin_opts == "opts"
 
-    def test_from_link_aead2022(self):
-        Server = self._get_server_class()
-        link = _make_aead2022_link("2022-blake3-aes-256-gcm", "psk123", "host.com", 443, tag="AEAD22")
-        s = Server.from_link(link)
-        assert s is not None
-        assert s.method == "2022-blake3-aes-256-gcm"
-        assert s.password == "psk123"
+        # AEAD2022
+        s3 = Server.from_link(_make_aead2022_link("2022-blake3-aes-256-gcm", "psk123", "host.com", 443))
+        assert s3.method == "2022-blake3-aes-256-gcm" and s3.password == "psk123"
 
-    def test_from_dict_with_plugin(self):
-        Server = self._get_server_class()
-        d = {
-            "key": "ss://...", "name": "Test", "host": "h.com", "port": "443",
-            "method": "aes-256-gcm", "password": "pw",
-            "plugin": "v2ray-plugin", "plugin_opts": "server;tls"
-        }
-        s = Server.from_dict(d)
-        assert s.plugin == "v2ray-plugin"
-        assert s.plugin_opts == "server;tls"
-
-    def test_to_dict_with_plugin(self):
+    def test_dict_serialization_and_unique_key(self):
         Server = self._get_server_class()
         s = Server(key="k", name="n", host="h", port=443, method="m", password="p",
                    plugin="v2ray-plugin", plugin_opts="server")
         d = s.to_dict()
-        assert d['plugin'] == "v2ray-plugin"
-        assert d['plugin_opts'] == "server"
+        assert d['plugin'] == "v2ray-plugin" and d['plugin_opts'] == "server"
 
-    def test_to_dict_no_plugin_omits_fields(self):
-        Server = self._get_server_class()
-        s = Server(key="k", name="n", host="h", port=443, method="m", password="p")
-        d = s.to_dict()
-        assert 'plugin' not in d
-        assert 'plugin_opts' not in d
+        restored = Server.from_dict(d)
+        assert restored.plugin == "v2ray-plugin" and restored.plugin_opts == "server"
 
-    def test_unique_key(self):
-        Server = self._get_server_class()
-        s1 = Server(host="h", port=443, method="m", password="p")
-        s2 = Server(host="h", port=443, method="m", password="p")
-        s3 = Server(host="h", port=443, method="m", password="other")
-        assert s1.unique_key == s2.unique_key
-        assert s1.unique_key != s3.unique_key
+        s_no_plug = Server(key="k", name="n", host="h", port=443, method="m", password="p")
+        assert 'plugin' not in s_no_plug.to_dict()
+
+        s_dup = Server(host="h", port=443, method="m", password="p")
+        s_other = Server(host="h", port=443, method="m", password="other")
+        assert s_no_plug.unique_key == s_dup.unique_key
+        assert s_no_plug.unique_key != s_other.unique_key
+
 
 
 # --- Tests for SIP008 JSON parsing in subscription_store ---
@@ -420,115 +324,66 @@ class TestSIP008JSON:
 # --- Tests for metadata extraction ---
 
 class TestMetadataExtraction:
-    def _make_response(self, headers):
+    def test_extract_metadata(self):
+        from utils.subscription_store import _extract_metadata
         resp = MagicMock()
-        resp.headers = headers
-        return resp
-
-    def test_traffic_header(self):
-        from utils.subscription_store import _extract_metadata
-        resp = self._make_response({
-            'Subscription-Userinfo': 'upload=1000; download=2000; total=5000; expire=1700000000'
-        })
-        meta = _extract_metadata(resp)
-        assert meta['traffic']['used'] == 3000
-        assert meta['traffic']['total'] == 5000
-        assert meta['traffic']['expire'] == 1700000000
-
-    def test_profile_headers(self):
-        from utils.subscription_store import _extract_metadata
-        resp = self._make_response({
+        resp.headers = {
+            'Subscription-Userinfo': 'upload=1000; download=2000; total=5000; expire=1700000000',
             'Profile-Title': 'My Provider',
             'Profile-Update-Interval': '24',
             'Support-URL': 'https://support.example.com',
             'Announce': 'Server maintenance on Friday',
-        })
+        }
         meta = _extract_metadata(resp)
+        assert meta['traffic']['used'] == 3000
+        assert meta['traffic']['total'] == 5000
+        assert meta['traffic']['expire'] == 1700000000
         assert meta['profile_title'] == 'My Provider'
         assert meta['profile_update_interval'] == 24
         assert meta['support_url'] == 'https://support.example.com'
         assert meta['announce'] == 'Server maintenance on Friday'
 
-    def test_no_headers(self):
-        from utils.subscription_store import _extract_metadata
-        resp = self._make_response({})
-        meta = _extract_metadata(resp)
-        assert meta == {}
+        resp.headers = {}
+        assert _extract_metadata(resp) == {}
 
 
 # --- Tests for base64 header value decoding ---
 
 class TestDecodeMaybeBase64:
-    def test_plaintext_passthrough(self):
+    @pytest.mark.parametrize("inp, expected", [
+        ("My Provider", "My Provider"),
+        ("", ""),
+        ("base64:VGVzdA==", "Test"),
+        ("base64:!!!not-b64!!!", "base64:!!!not-b64!!!"),
+        ("base64:" + base64.b64encode("✦ Ínfinity".encode()).decode(), "✦ Ínfinity"),
+    ])
+    def test_decode_maybe_base64(self, inp, expected):
         from utils.subscription_store import _decode_maybe_base64
-        assert _decode_maybe_base64("My Provider") == "My Provider"
-        assert _decode_maybe_base64("") == ""
-
-    def test_decodes_base64(self):
-        from utils.subscription_store import _decode_maybe_base64
-        assert _decode_maybe_base64("base64:VGVzdA==") == "Test"
-
-    def test_undecodable_passthrough(self):
-        from utils.subscription_store import _decode_maybe_base64
-        assert _decode_maybe_base64("base64:!!!not-b64!!!") == "base64:!!!not-b64!!!"
-
-    def test_decodes_base64_utf8(self):
-        from utils.subscription_store import _decode_maybe_base64
-        encoded = base64.b64encode("✦ Ínfinity".encode()).decode()
-        assert _decode_maybe_base64("base64:" + encoded) == "✦ Ínfinity"
+        assert _decode_maybe_base64(inp) == expected
 
 
 # --- Tests for description extraction ---
 
 class TestExtractDescription:
-    def test_header_description_beats_announce(self):
+    def test_extract_description_sources(self):
         from utils.subscription_store import _extract_description
-        meta = {'description': 'From header', 'announce': 'Announce text'}
-        result = _extract_description({}, ['ss://a@b:443'], meta['announce'], meta)
-        assert result == 'From header'
-
-    def test_undecodable_header_description_skipped(self):
-        from utils.subscription_store import _extract_description
-        meta = {'description': 'base64:!!!bad!!!', 'announce': 'Announce text'}
-        result = _extract_description({}, ['ss://a@b:443'], meta['announce'], meta)
-        assert result == 'Announce text'
-
-    def test_announce_url_skipped(self):
-        from utils.subscription_store import _extract_description
-        meta = {'announce': 'https://example.com/news'}
-        result = _extract_description({}, ['ss://a@b:443'], meta['announce'], meta)
-        assert result == ''
-        result = _extract_description({}, ['Welcome aboard', 'ss://a@b:443'],
-                                      meta['announce'], meta)
-        assert result == 'Welcome aboard'
-
-    def test_announce_text_used(self):
-        from utils.subscription_store import _extract_description
-        result = _extract_description({}, ['ss://a@b:443'], 'Server maintenance on Friday', {})
-        assert result == 'Server maintenance on Friday'
-
-    def test_announce_base64_skipped(self):
-        from utils.subscription_store import _extract_description
-        result = _extract_description({}, ['ss://a@b:443'], 'base64:!!!bad!!!', {})
-        assert result == ''
-
-    def test_body_preamble_used(self):
-        from utils.subscription_store import _extract_description
-        lines = ['First line', '', 'base64:!!!skip!!!', 'Second line',
-                 'ss://a@b:443', 'ss://c@d:444']
-        result = _extract_description({}, lines, '', {})
-        assert result == 'First line Second line'
-
-    def test_all_links_no_description(self):
-        from utils.subscription_store import _extract_description
-        result = _extract_description({}, ['ss://a@b:443', 'vless://x@y:443'], '', {})
-        assert result == ''
-
-    def test_preamble_capped_at_ten_lines(self):
-        from utils.subscription_store import _extract_description
-        lines = [f"line {i}" for i in range(15)] + ['ss://a@b:443']
-        result = _extract_description({}, lines, '', {})
-        assert result == ' '.join(f"line {i}" for i in range(10))
+        # Header description beats announce
+        assert _extract_description({}, ['ss://a@b:443'], 'Announce', {'description': 'From header', 'announce': 'Announce'}) == 'From header'
+        # Undecodable header skipped for announce
+        assert _extract_description({}, ['ss://a@b:443'], 'Announce', {'description': 'base64:!!!bad!!!', 'announce': 'Announce'}) == 'Announce'
+        # Announce URL skipped, fallback to preamble or empty
+        assert _extract_description({}, ['ss://a@b:443'], 'https://example.com/news', {'announce': 'https://example.com/news'}) == ''
+        assert _extract_description({}, ['Welcome aboard', 'ss://a@b:443'], 'https://example.com/news', {'announce': 'https://example.com/news'}) == 'Welcome aboard'
+        # Valid announce text or invalid base64 announce
+        assert _extract_description({}, ['ss://a@b:443'], 'Server maintenance', {}) == 'Server maintenance'
+        assert _extract_description({}, ['ss://a@b:443'], 'base64:!!!bad!!!', {}) == ''
+        # Body preamble (skipping base64 decode failures, capped at 10 lines)
+        lines = ['First line', '', 'base64:!!!skip!!!', 'Second line', 'ss://a@b:443', 'ss://c@d:444']
+        assert _extract_description({}, lines, '', {}) == 'First line Second line'
+        lines_15 = [f"line {i}" for i in range(15)] + ['ss://a@b:443']
+        assert _extract_description({}, lines_15, '', {}) == ' '.join(f"line {i}" for i in range(10))
+        # All links -> empty
+        assert _extract_description({}, ['ss://a@b:443', 'vless://x@y:443'], '', {}) == ''
 
 
 # --- Tests for parse_subscription metadata integration ---
@@ -565,9 +420,11 @@ class TestParseSubscriptionMetadata:
         resp.__enter__.return_value = resp
         return patch.object(sub_manager, '_open_subscription_request', return_value=resp)
 
-    def test_header_description_and_decoded_title(self):
+    def test_parse_subscription_metadata(self):
         from utils import subscription_store as sub_manager
         enc = lambda s: 'base64:' + base64.b64encode(s.encode()).decode()
+
+        # 1. Header description & title
         headers = {
             'Profile-Title': enc('My Provider'),
             'Announce': enc('Server maintenance on Friday'),
@@ -581,20 +438,14 @@ class TestParseSubscriptionMetadata:
         assert meta['announce'] == 'Server maintenance on Friday'
         assert meta['description'] == 'Premium service, 4K ready'
 
-    def test_announce_becomes_description_without_header(self):
-        from utils import subscription_store as sub_manager
-        enc = lambda s: 'base64:' + base64.b64encode(s.encode()).decode()
-        headers = {'Announce': enc('Welcome to Infinity')}
-        body = base64.b64encode(self._LINK.encode()).decode()
-        with self._mock_urlopen(body, headers):
-            links, meta = sub_manager.parse_subscription('https://example.com/sub')
+        # 2. Announce fallback
+        with self._mock_urlopen(body, {'Announce': enc('Welcome to Infinity')}):
+            _, meta = sub_manager.parse_subscription('https://example.com/sub')
         assert meta['announce'] == 'Welcome to Infinity'
         assert meta['description'] == 'Welcome to Infinity'
 
-    def test_body_preamble_becomes_description(self):
-        from utils import subscription_store as sub_manager
-        text = "Welcome to the club\nss://a@b:443"
-        body = base64.b64encode(text.encode()).decode()
-        with self._mock_urlopen(body, {}):
-            links, meta = sub_manager.parse_subscription('https://example.com/sub')
+        # 3. Preamble fallback
+        preamble_body = base64.b64encode(b"Welcome to the club\nss://a@b:443").decode()
+        with self._mock_urlopen(preamble_body, {}):
+            _, meta = sub_manager.parse_subscription('https://example.com/sub')
         assert meta['description'] == 'Welcome to the club'

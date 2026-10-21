@@ -13,7 +13,6 @@ from utils.startup_utils import (  # noqa: E402
     acquire_single_instance_lock,
     apply_high_dpi_policy,
     apply_language_from_settings,
-    apply_render_backend_from_settings,
     configure_pixmap_cache,
     desktop_file_name,
     find_usable_backend,
@@ -94,7 +93,6 @@ def main(argv=None):
         singbox_config.set_debug_logs(True)
     initialize()
     apply_high_dpi_policy()
-    apply_render_backend_from_settings()
 
     # Single-instance guard: refuse a second instance before it can race on
     # local port binds, PID markers, or settings.json writes.

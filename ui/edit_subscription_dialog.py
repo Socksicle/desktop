@@ -3,12 +3,15 @@
 import random
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFrame, QGridLayout, QApplication
+    QPushButton, QFrame, QGridLayout, QApplication, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import (
+    Qt, QSize, QEvent, QEventLoop, Property, QPropertyAnimation, QEasingCurve
+)
+from PySide6.QtGui import QPainter, QColor
 from ui.message_box import MessageBox
 from ui.wavy_progress_bar import WavyLinearProgressBar
-from utils.window_utils import configure_window
+from utils.window_utils import configure_window, find_overlay_target
 from utils.locale import format_days_remaining
 from utils.icons import icon, set_label_icon
 from utils.i18n import tr
@@ -27,20 +30,48 @@ class EditSubscriptionDialog(QDialog):
     """Material 3 subscription editor."""
 
     def __init__(self, sub_dict: dict, sub_manager, theme, parent=None):
-        super().__init__(parent)
+        target = find_overlay_target(parent)
+        self._target_parent = target
+        self._is_overlay = target is not None
+        super().__init__(target if self._is_overlay else parent)
         self.sub = sub_dict
         self.manager = sub_manager
         self.theme = theme
         self.selected_icon = sub_dict.get("icon_emoji", "🌐")
         self.deleted = False
-        self.setWindowFlags(Qt.Dialog)
-        configure_window(self)
+        self._dialog_progress = 0.0
+        self._scrim_opacity = 0.0
+        self._is_finishing = False
+        self._loop = None
+
+        if self._is_overlay:
+            self.setWindowFlags(Qt.Widget)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setGeometry(self._target_parent.rect())
+            self._target_parent.installEventFilter(self)
+        else:
+            self.setWindowFlags(Qt.Dialog)
+            configure_window(self)
+
         self._init_ui()
 
+        if self._is_overlay:
+            self.card_opacity_effect = QGraphicsOpacityEffect(self.card)
+            self.card.setGraphicsEffect(self.card_opacity_effect)
+            self._anim = QPropertyAnimation(self, b"dialog_progress")
+            self._anim.setDuration(180)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._update_card_geometry()
+
     def _init_ui(self):
-        self.setFixedWidth(420)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 14, 14, 14)
+        self.outer_layout = QVBoxLayout(self)
+        if self._is_overlay:
+            self.outer_layout.setAlignment(Qt.AlignCenter)
+            self.outer_layout.setContentsMargins(16, 16, 16, 16)
+        else:
+            self.setFixedWidth(420)
+            self.outer_layout.setContentsMargins(14, 14, 14, 14)
+        outer = self.outer_layout
 
         surface_hex = getattr(self.theme, "surface_container", getattr(self.theme, "surface", "#1A1624"))
         surface_high = getattr(self.theme, "surface_container_high", "#241F32")
@@ -295,10 +326,145 @@ class EditSubscriptionDialog(QDialog):
         lay.addLayout(act_row)
         outer.addWidget(self.card)
 
+    def _update_card_geometry(self):
+        if not self._is_overlay:
+            return
+        parent_w = self._target_parent.width() if self._target_parent else 420
+        card_w = min(420, max(280, parent_w - 32)) if parent_w > 0 else 420
+        self.card.setFixedWidth(card_w)
+
+    def get_dialog_progress(self) -> float:
+        return self._dialog_progress
+
+    def set_dialog_progress(self, val: float):
+        self._dialog_progress = max(0.0, min(1.0, float(val)))
+        self._scrim_opacity = self._dialog_progress
+        if hasattr(self, "card_opacity_effect"):
+            self.card_opacity_effect.setOpacity(self._dialog_progress)
+        offset = round(14 * (1.0 - self._dialog_progress))
+        if hasattr(self, "outer_layout"):
+            self.outer_layout.setContentsMargins(16, 16 + offset, 16, 16 - offset)
+        self.update()
+
+    dialog_progress = Property(float, get_dialog_progress, set_dialog_progress)
+
+    def get_scrim_opacity(self) -> float:
+        return self._scrim_opacity
+
+    def set_scrim_opacity(self, val: float):
+        self._scrim_opacity = max(0.0, min(1.0, float(val)))
+        self.update()
+
+    scrim_opacity = Property(float, get_scrim_opacity, set_scrim_opacity)
+
+    def eventFilter(self, watched, event):
+        target = getattr(self, "_target_parent", None)
+        if target is not None and watched == target and event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
+            self.setGeometry(target.rect())
+            self._update_card_geometry()
+        return super().eventFilter(watched, event)
+
+    def paintEvent(self, event):
+        if self._is_overlay:
+            alpha = int(140 * self._scrim_opacity)
+            if alpha > 0:
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setBrush(QColor(0, 0, 0, alpha))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(self.rect(), 32, 32)
+        else:
+            super().paintEvent(event)
+
+    def mousePressEvent(self, event):
+        if self._is_overlay:
+            if event.button() == Qt.LeftButton:
+                if not self.card.geometry().contains(event.position().toPoint()):
+                    self.reject()
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def accept(self):
+        super().accept()
+        if self._is_overlay:
+            self._finish_overlay(animate=True)
+
+    def reject(self):
+        super().reject()
+        if self._is_overlay:
+            self._finish_overlay(animate=True)
+
+    def _finish_overlay(self, animate: bool = True):
+        if getattr(self, "_is_finishing", False):
+            return
+        self._is_finishing = True
+
+        def _cleanup():
+            if self._target_parent:
+                try:
+                    self._target_parent.removeEventFilter(self)
+                except Exception:
+                    pass
+            self.hide()
+            if self._loop and self._loop.isRunning():
+                self._loop.quit()
+
+        if animate and self.isVisible() and self._dialog_progress > 0.05:
+            self._anim.stop()
+            self._anim.setDuration(140)
+            self._anim.setEasingCurve(QEasingCurve.Type.InCubic)
+            self._anim.setStartValue(self._dialog_progress)
+            self._anim.setEndValue(0.0)
+            self._anim.finished.connect(_cleanup)
+            self._anim.start()
+        else:
+            _cleanup()
+
+    def exec(self) -> int:
+        if not self._is_overlay:
+            return super().exec()
+
+        if self._target_parent:
+            self.setGeometry(self._target_parent.rect())
+            self._update_card_geometry()
+        self.set_dialog_progress(0.0)
+        self.show()
+        self.raise_()
+        self.edit_name.setFocus()
+
+        self._anim.stop()
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+
+        self._loop = QEventLoop()
+        self._loop.exec()
+        return self.result()
+
+    exec_ = exec
+
+    def closeEvent(self, event):
+        if self._loop and self._loop.isRunning():
+            self._loop.quit()
+        super().closeEvent(event)
+
+    def hideEvent(self, event):
+        if self._loop and self._loop.isRunning():
+            self._loop.quit()
+        super().hideEvent(event)
+
     def _open_icon_picker(self):
         dlg = QDialog(self)
-        dlg.setWindowFlags(Qt.Dialog)
-        configure_window(dlg)
+        if self._is_overlay:
+            dlg.setWindowFlags(Qt.Widget)
+            dlg.setAttribute(Qt.WA_TranslucentBackground, True)
+            dlg.setGeometry(self.rect())
+        else:
+            dlg.setWindowFlags(Qt.Dialog)
+            configure_window(dlg)
         surface_high = getattr(self.theme, "surface_container_high", "#241F32")
 
         box = QFrame(dlg)
@@ -335,7 +501,12 @@ class EditSubscriptionDialog(QDialog):
         d_lay.addLayout(grid)
 
         o_lay = QVBoxLayout(dlg)
-        o_lay.setContentsMargins(10, 10, 10, 10)
+        if self._is_overlay:
+            o_lay.setAlignment(Qt.AlignCenter)
+            o_lay.setContentsMargins(16, 16, 16, 16)
+            dlg.mousePressEvent = lambda e: dlg.reject() if not box.geometry().contains(e.position().toPoint()) else None
+        else:
+            o_lay.setContentsMargins(10, 10, 10, 10)
         o_lay.addWidget(box)
         dlg.exec()
 

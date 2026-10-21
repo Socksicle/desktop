@@ -328,3 +328,14 @@ When uncertain whether to add a comment, add it only if it explains information 
 When uncertain whether a failure should be hidden or surfaced, preserve safety and state integrity; report a clear error rather than silently pretending success.
 
 When uncertain whether to broaden the patch, keep the scope narrow and explain the adjacent issue separately instead of quietly adding it.
+
+## 16. Git Remote Workflow
+
+1. Репозиторий подключен к двум remote-серверам:
+   - `origin` — дев-репозиторий для активной разработки и тестов с командой: https://github.com/Socksicle/desktop-dev.git
+   - `release` — основной публичный репозиторий для пользователей: https://github.com/Socksicle/desktop.git
+2. Правила для агента:
+   - Все новые изменения, коммиты, черновые фичи и автопуши отправлять строго в `origin` (`git push origin <branch>`).
+   - Категорически запрещено пушить напрямую в `release` без явной команды пользователя «зарелизь» или «запушь в релиз».
+   - Перед пушем в `release` убедиться, что локальная ветка синхронизирована с `origin/main` и все тесты/сборка проходят без ошибок.
+

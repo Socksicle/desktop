@@ -3,10 +3,13 @@
 
 #define MyAppName "Socksicle"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1-rc.1"
+#define MyAppVersion "0.1.1"
 #endif
 #ifndef OutputBaseFilename
 #define OutputBaseFilename "Socksicle-Setup-" + MyAppVersion + "-x64"
+#endif
+#ifndef MySourceDir
+#define MySourceDir "..\..\dist\Socksicle.dist"
 #endif
 #define MyAppPublisher "iwtsd"
 #define MyAppURL "https://github.com/socksicle/desktop"
@@ -43,7 +46,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Copy all files compiled by Nuitka
-Source: "..\..\dist\Socksicle.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"

@@ -25,6 +25,7 @@ class HeroPowerButton(QWidget):
         self._is_connected = False
         self._is_connecting = False
         self._spin_angle = 0.0
+        self._settle_start_angle = -90.0
         self._progress = 0.0  # 0.0 = Disconnected, 1.0 = Connected
 
         self._color_accent = QColor("#D0BCFF")
@@ -36,8 +37,8 @@ class HeroPowerButton(QWidget):
         self.setCursor(Qt.PointingHandCursor)
 
         self._anim = QPropertyAnimation(self, b"progress")
-        self._anim.setDuration(720)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._anim.setDuration(340)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(16)
@@ -55,15 +56,14 @@ class HeroPowerButton(QWidget):
     def _ring_frame(self, progress: float) -> tuple:
         """Rotation and arc length of the settling ring at ``progress``.
 
-        The angle decreases as progress grows: Qt arcs run
-        counter-clockwise, so a decreasing angle spins clockwise (right),
-        matching the connecting-phase direction.
+        Angle smoothly advances clockwise from _settle_start_angle,
+        and arcs seamlessly expand from 115 deg to 180 deg to close the ring.
         """
-        rot_deg = -progress * 360.0 * 1.5 - 90.0
-        if progress < 0.65:
+        rot_deg = self._settle_start_angle - (progress - 0.4) / 0.6 * 90.0
+        if progress <= 0.4:
             arc_len = 115.0
         else:
-            join_frac = (progress - 0.65) / 0.35
+            join_frac = min(1.0, max(0.0, (progress - 0.4) / 0.6))
             arc_len = 115.0 + (180.0 - 115.0) * join_frac
         return rot_deg, arc_len
 
@@ -97,10 +97,14 @@ class HeroPowerButton(QWidget):
         if connecting:
             self._is_connected = False
             self._anim.stop()
-            # Set intermediate progress so halo and arcs are visible
-            self.set_progress(0.4)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._anim.setDuration(240)
+            self._anim.setStartValue(self._progress)
+            self._anim.setEndValue(0.4)
+            self._anim.start()
             self._spin_timer.start()
         else:
+            self._settle_start_angle = self._spin_angle
             self._spin_timer.stop()
             self.update()
 
@@ -118,7 +122,8 @@ class HeroPowerButton(QWidget):
             return
 
         self._anim.stop()
-        self._anim.setDuration(520 if connected else 600)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.setDuration(340 if connected else 280)
         self._anim.setStartValue(self._progress)
         self._anim.setEndValue(target)
         self._anim.start()
@@ -158,16 +163,6 @@ class HeroPowerButton(QWidget):
 
         p = self._progress
 
-        # 0. Ambient Halo Glow behind button when connected / connecting
-        if p > 0.0:
-            halo_radius = radius + 6.0
-            halo_alpha = int(p * 0x24)
-            if halo_alpha > 0:
-                halo_color = QColor(self._color_accent.red(), self._color_accent.green(), self._color_accent.blue(), min(255, halo_alpha))
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QBrush(halo_color))
-                painter.drawEllipse(QPointF(cx, cy), halo_radius, halo_radius)
-
         # 1. Draw Disconnected State Fill & Crisp Edge Outline
         if p < 1.0:
             fill_alpha = int((1.0 - p) * 255)
@@ -188,7 +183,7 @@ class HeroPowerButton(QWidget):
         ring_rect = QRectF(cx - radius, cy - radius, radius * 2.0, radius * 2.0)
 
         if p > 0.0:
-            # Subtle translucent inner glow when connected
+            # Subtle translucent inner glow when connected (strictly inside ring)
             glow_alpha = int(p * 0x22)
             if glow_alpha > 0:
                 glow_color = QColor(self._color_accent.red(), self._color_accent.green(), self._color_accent.blue(), min(255, glow_alpha))
@@ -196,7 +191,16 @@ class HeroPowerButton(QWidget):
                 painter.setBrush(QBrush(glow_color))
                 painter.drawEllipse(QPointF(cx, cy), radius - stroke_width / 2.0, radius - stroke_width / 2.0)
 
-            if p >= 0.98 and not self._is_connecting:
+            if not self._is_connecting and not self._is_connected:
+                # Disconnecting state: outer ring stays solid and smoothly fades out
+                # without breaking into spinning arcs or reversing.
+                ring_alpha = int(p * 255)
+                if ring_alpha > 0:
+                    ring_pen = QPen(QColor(self._color_accent.red(), self._color_accent.green(), self._color_accent.blue(), min(255, ring_alpha)), stroke_width)
+                    painter.setPen(ring_pen)
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawEllipse(QPointF(cx, cy), radius, radius)
+            elif p >= 0.988 and not self._is_connecting:
                 # Completed solid ring
                 ring_pen = QPen(self._color_accent, stroke_width)
                 ring_pen.setCapStyle(Qt.RoundCap)
@@ -204,7 +208,7 @@ class HeroPowerButton(QWidget):
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(QPointF(cx, cy), radius, radius)
             else:
-                # Spinning arc lines that transition from white to accent
+                # Spinning / settling arc lines that transition from white to accent
                 stroke_color = self._blend_color(QColor(255, 255, 255), self._color_accent, p)
                 ring_pen = QPen(stroke_color, stroke_width)
                 ring_pen.setCapStyle(Qt.RoundCap)
@@ -235,12 +239,19 @@ class HeroPowerButton(QWidget):
         painter.setPen(icon_pen)
         painter.setBrush(Qt.NoBrush)
 
-        scale = 1.0
-        if 0.01 <= progress <= 0.99:
-            if progress < 0.5:
-                scale = 1.0 - 0.1 * (progress / 0.5)
+        # Smooth, natural icon scaling without awkward freeze at progress 0.4
+        if self._is_connected and not self._is_connecting:
+            # Gentle settling pop on connect: 0.98 -> 1.02 -> 1.0
+            t = min(1.0, max(0.0, (progress - 0.4) / 0.6))
+            if t < 0.7:
+                scale = 0.98 + 0.05 * (t / 0.7)
             else:
-                scale = 0.9 + 0.1 * ((progress - 0.5) / 0.5)
+                scale = 1.03 - 0.03 * ((t - 0.7) / 0.3)
+        elif not self._is_connected and not self._is_connecting and progress < 1.0:
+            # Smooth scale on disconnect: 0.97 -> 1.0
+            scale = 0.97 + 0.03 * (1.0 - progress)
+        else:
+            scale = 1.0
 
         painter.save()
         painter.translate(cx, cy)

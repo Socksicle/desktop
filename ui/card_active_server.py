@@ -1,9 +1,35 @@
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QLabel
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen
 from .signal_bars_view import SignalBarsView
 from .chevron_view import ChevronView
 from .elided_label import ElidedLabel
 from utils.i18n import tr
+
+
+class _SmoothTile(QFrame):
+    """Antialiased rounded squircle container to avoid jagged QSS borders."""
+
+    def __init__(self, radius: float = 12.0, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(36, 36)
+        self._radius = radius
+        self._bg_color = QColor(255, 255, 255, 12)
+        self._border_color = QColor(147, 143, 153, 40)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def set_colors(self, bg: str | QColor, border: str | QColor):
+        self._bg_color = QColor(bg) if isinstance(bg, str) else bg
+        self._border_color = QColor(border) if isinstance(border, str) else border
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        p.setPen(QPen(self._border_color, 1.0))
+        p.setBrush(QBrush(self._bg_color))
+        p.drawRoundedRect(rect, self._radius, self._radius)
 
 
 class CardActiveServer(QFrame):
@@ -30,8 +56,7 @@ class CardActiveServer(QFrame):
         layout.setSpacing(12)
 
         # Flag squircle
-        self.flag_frame = QFrame()
-        self.flag_frame.setFixedSize(36, 36)
+        self.flag_frame = _SmoothTile(radius=12.0)
         flag_layout = QVBoxLayout(self.flag_frame)
         flag_layout.setContentsMargins(0, 0, 0, 0)
         self.flag_label = QLabel("🌐")
@@ -71,8 +96,9 @@ class CardActiveServer(QFrame):
         badges_layout.addWidget(self.ping_bars)
 
         self.ping_label = QLabel("-")
+        muted = getattr(self.theme, "on_surface_variant", "#CAC4D0")
         self.ping_label.setStyleSheet(
-            "font-size: 12px; font-weight: bold; color: #4CAF50; background: transparent;")
+            f"font-size: 12px; font-weight: bold; color: {muted}; background: transparent;")
         badges_layout.addWidget(self.ping_label)
         self._update_ping_visibility()
 
@@ -125,11 +151,7 @@ class CardActiveServer(QFrame):
             }}
         """)
 
-        self.flag_frame.setStyleSheet("""
-            background-color: rgba(255, 255, 255, 12);
-            border-radius: 12px;
-            border: 1px solid rgba(147, 143, 153, 40);
-        """)
+        self.flag_frame.set_colors(QColor(255, 255, 255, 12), QColor(147, 143, 153, 40))
 
         self.label_target.setStyleSheet(
             f"color: {accent_hex}; font-size: 10px; font-weight: bold; letter-spacing: 0.8px; background: transparent;")
@@ -150,8 +172,7 @@ class CardActiveServer(QFrame):
         """)
 
         self.ping_bars.apply_theme(theme)
-        if self._last_ms is not None:
-            self.set_latency(self._last_ms)
+        self.set_latency(self._last_ms)
 
     def set_server(self, server: dict | None):
         if not server:
@@ -193,9 +214,10 @@ class CardActiveServer(QFrame):
 
     def set_latency(self, ms: float | None):
         theme = self.theme
-        ok_hex = getattr(theme, "success", "#4CAF50")
+        ok_hex = getattr(theme, "primary", "#D0BCFF")
         warn_hex = getattr(theme, "warning", "#FFC107")
         poor_hex = getattr(theme, "error", "#F44336")
+        muted_hex = getattr(theme, "on_surface_variant", "#CAC4D0")
 
         self._last_ms = ms
         self._update_ping_visibility()
@@ -203,7 +225,7 @@ class CardActiveServer(QFrame):
         if ms is None or ms == 0:
             self.ping_label.setText("-")
             self.ping_label.setStyleSheet(
-                f"font-size: 12px; font-weight: bold; color: {ok_hex}; background: transparent;")
+                f"font-size: 12px; font-weight: bold; color: {muted_hex}; background: transparent;")
             self.ping_bars.set_level(0)
             return
 

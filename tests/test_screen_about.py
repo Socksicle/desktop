@@ -1,19 +1,27 @@
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 
 from utils.theme import M3Theme
 from ui.screen_about import (
     ScreenAbout, CONTRIBUTORS,
-    get_real_app_version, get_real_device_name,
+    get_real_app_version,
     get_real_core_engine, get_real_os_version, get_real_hwid
 )
+from utils.platform_utils import get_real_device_name
 from ui.blob_avatar_view import BlobAvatarView
 from ui.legal_dialog import LegalDialog, load_legal_text
 
 
+def test_device_name_uses_hostname_only(monkeypatch):
+    monkeypatch.setattr("utils.platform_utils.is_windows", lambda: False)
+    monkeypatch.setattr("utils.platform_utils.socket.gethostname", lambda: "test-host")
+    assert get_real_device_name() == "test-host"
+
+
 def test_real_data_retrieval_functions():
     app_ver = get_real_app_version()
-    assert app_ver == "0.1-rc.1"
+    assert app_ver == "0.1.1"
     assert "commit" not in app_ver
 
     dev_name = get_real_device_name()
@@ -79,6 +87,28 @@ def test_screen_about_copy_hwid(qapp):
     assert "Скопировано" in screen.btn_copy_hwid.text()
 
 
+def test_screen_about_hwid_blur_returns_on_click_and_page_leave(qapp):
+    theme = M3Theme(preset_key="lavender")
+    screen = ScreenAbout(theme, settings={"hwid_value": "ABCDEF1234567890"})
+    screen.show()
+
+    assert screen.edit_hwid.is_blurred()
+    assert screen.edit_hwid.text() == "ABCDEF1234567890"
+
+    QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
+    assert not screen.edit_hwid.is_blurred()
+
+    QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
+    assert screen.edit_hwid.is_blurred()
+
+    QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
+    assert not screen.edit_hwid.is_blurred()
+
+    screen.hide()
+    assert screen.edit_hwid.is_blurred()
+    assert screen.edit_hwid.text() == "ABCDEF1234567890"
+
+
 def test_screen_about_dev_unlock(qapp):
     theme = M3Theme(preset_key="coral")
     screen = ScreenAbout(theme)
@@ -93,7 +123,8 @@ def test_screen_about_dev_unlock(qapp):
         screen._on_hwid_card_clicked(None)
 
     assert unlocked is True
-    assert "DEV UNLOCKED" in screen.edit_hwid.text()
+    assert screen.edit_hwid.text() == screen.hwid_value
+    assert screen.edit_hwid.is_blurred()
 
 
 def test_blob_avatar_shuffle(qapp):

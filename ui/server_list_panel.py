@@ -1,9 +1,17 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsOpacityEffect, QButtonGroup, QLabel,
+    QSpacerItem, QSizePolicy, QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal, Slot, QPropertyAnimation, QThreadPool
+from PySide6.QtCore import Qt, Signal, Slot, QPropertyAnimation, QThreadPool, QPoint
+
+try:
+    import shiboken6
+except ImportError:
+    shiboken6 = None
 from .server_item import ServerItem
 from .group_header_card import GroupHeaderCard
+from .virtual_server_group import VirtualGroup
+from .server_list_virtualizer import ServerListVirtualizer, create_or_update_group_card, WidgetPool
 from utils.ping import AsyncBatchPingJob
 from utils.server_model import server_identity
 from utils.i18n import tr
@@ -35,6 +43,9 @@ class ServerListPanel(QWidget):
         self._show_flags = bool(show_flags)
         self._server_items = []
         self._group_cards = []
+        self._virtualizer = ServerListVirtualizer(self)
+        self._selected_index: int = -1
+        self._selected_key: str | None = None
         self._fade_out_cb = None
         self._query = ""
         self._last_servers = []
@@ -44,10 +55,27 @@ class ServerListPanel(QWidget):
         self._setup_ui()
         self.apply_theme(theme)
 
+    @property
+    def _virtual_groups(self):
+        return self._virtualizer.virtual_groups
+
+    @_virtual_groups.setter
+    def _virtual_groups(self, val):
+        self._virtualizer.virtual_groups = val
+
+    @property
+    def _item_pool(self):
+        return self._virtualizer.item_pool
+
+    @_item_pool.setter
+    def _item_pool(self, val):
+        self._virtualizer.item_pool = val
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        self._bottom_spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
         self._opacity_effect = self._new_opacity_effect()
         self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
@@ -108,6 +136,9 @@ class ServerListPanel(QWidget):
         if checked:
             idx = self._button_group.id(button)
             if idx >= 0:
+                self._selected_index = idx
+                if 0 <= idx < len(self._last_servers):
+                    self._selected_key = server_identity(self._last_servers[idx])
                 self.serverSelected.emit(idx)
 
     def refresh(self, servers, connected_server_key=None, groups=None):
@@ -134,6 +165,8 @@ class ServerListPanel(QWidget):
         try:
             for b in self._button_group.buttons():
                 self._button_group.removeButton(b)
+            layout.removeItem(self._bottom_spacer)
+            self._virtualizer.clear_spacers()
             # Detach everything first WITHOUT deleting: reusable widgets are
             # re-added below in the new order, so peak memory stays ~1x.
             detached_items: list = []
@@ -149,44 +182,35 @@ class ServerListPanel(QWidget):
                     pass
                 elif w is not None:
                     w.deleteLater()
+                else:
+                    if item is not getattr(self, "_bottom_spacer", None):
+                        if shiboken6 is not None:
+                            try:
+                                if shiboken6.isValid(item):
+                                    shiboken6.delete(item)
+                            except Exception:
+                                pass
+                    del item
 
-            pool_by_addr = {id(it.server): it for it in detached_items}
-            pool_by_key: dict = {}
-            for it in detached_items:
-                pool_by_key.setdefault(server_identity(it.server), []).append(it)
-            card_pool: dict = {}
-            for card in detached_cards:
-                card_pool.setdefault(card.key, []).append(card)
-
-            def _take_item(srv):
-                it = pool_by_addr.pop(id(srv), None)
-                if it is not None:
-                    lst = pool_by_key.get(server_identity(it.server))
-                    if lst:
-                        try:
-                            lst.remove(it)
-                        except ValueError:
-                            pass
-                    return it
-                lst = pool_by_key.get(server_identity(srv))
-                while lst:
-                    cand = lst.pop(0)
-                    if pool_by_addr.pop(id(cand.server), None) is not None:
-                        return cand
-                    # Already handed out via the addr path; skip it.
-                return None
-
-            def _take_card(gkey):
-                lst = card_pool.get(gkey)
-                if lst:
-                    return lst.pop(0)
-                return None
-
+            pool = WidgetPool(detached_items, detached_cards)
             self._server_items = []
             self._group_cards = []
 
             flat_index = {id(s): i for i, s in enumerate(servers)}
             query = self._query.strip().lower()
+
+            total_visible = 0
+            if groups:
+                for g in groups:
+                    exp = (not bool(g.get("collapsed", False))) or bool(query)
+                    if exp:
+                        total_visible += len(self._filter_group(g.get("servers", []), query))
+            else:
+                total_visible = len(self._filter_group(servers, query))
+
+            is_virtual = total_visible > 30
+            if is_virtual:
+                self._ensure_scroll_connected()
 
             if groups:
                 for group in groups:
@@ -196,28 +220,7 @@ class ServerListPanel(QWidget):
                         continue
 
                     gkey = group.get("key", "")
-                    card = _take_card(gkey)
-                    if card is None:
-                        card = GroupHeaderCard(
-                            key=gkey,
-                            title=group.get("title", ""),
-                            icon=group.get("icon", "🌐"),
-                            subtitle=group.get("subtitle", ""),
-                            is_direct=group.get("is_direct", False),
-                            theme=self.theme,
-                        )
-                        card.collapseToggled.connect(self.groupCollapseToggled.emit)
-                        card.pingGroupRequested.connect(self.groupPingRequested.emit)
-                        card.refreshRequested.connect(self.groupRefreshRequested.emit)
-                        card.editRequested.connect(self.groupEditRequested.emit)
-                    else:
-                        card.key = gkey
-                        card.update_group(
-                            group.get("title", ""),
-                            group.get("icon", "🌐"),
-                            group.get("subtitle", ""),
-                            bool(group.get("is_direct", False)),
-                        )
+                    card = create_or_update_group_card(group, pool.take_card(gkey), self.theme, self)
                     expanded = (not bool(group.get("collapsed", False))) or bool(query)
                     card.set_expanded(expanded)
                     layout.addWidget(card)
@@ -225,19 +228,47 @@ class ServerListPanel(QWidget):
 
                     if not expanded:
                         continue
-                    for srv in visible:
-                        self._place_server_item(srv, connected_server_key, flat_index, _take_item)
-            else:
-                for srv in self._filter_group(servers, query):
-                    self._place_server_item(srv, connected_server_key, flat_index, _take_item)
 
-            for lst in pool_by_key.values():
-                for it in lst:
+                    if is_virtual:
+                        vg = VirtualGroup(gkey, visible, flat_index, is_expanded=expanded)
+                        vg.card = card
+                        layout.addWidget(vg.top_spacer)
+                        layout.addWidget(vg.bottom_spacer)
+                        self._virtual_groups.append(vg)
+                    else:
+                        for srv in visible:
+                            self._place_server_item(srv, connected_server_key, flat_index, pool.take_item)
+            else:
+                visible = self._filter_group(servers, query)
+                if is_virtual:
+                    vg = VirtualGroup("", visible, flat_index, is_expanded=True)
+                    layout.addWidget(vg.top_spacer)
+                    layout.addWidget(vg.bottom_spacer)
+                    self._virtual_groups.append(vg)
+                else:
+                    for srv in visible:
+                        self._place_server_item(srv, connected_server_key, flat_index, pool.take_item)
+
+            if is_virtual:
+                self._update_virtual_window_sync(pool.take_item)
+
+            # Deletion is driven by the detached widgets, not by the match
+            # pools: a row can be indexed under both its key and its address,
+            # so pooling leftovers would delete it twice. Stopping the ping
+            # timer keeps it from ticking until deleteLater() takes effect.
+            placed_items = {id(it) for it in self._server_items}
+            for it in detached_items:
+                if id(it) in placed_items:
+                    continue
+                it.stop_ping_animation()
+                if total_visible > 30 and len(self._item_pool) < 25:
+                    it.hide()
+                    self._item_pool.append(it)
+                else:
                     it.deleteLater()
-            for it in pool_by_addr.values():
-                it.deleteLater()
-            for lst in card_pool.values():
-                for card in lst:
+            placed_cards = {id(card) for card in self._group_cards}
+            for card in detached_cards:
+                if id(card) not in placed_cards:
                     card.deleteLater()
 
             if not self._server_items and not self._group_cards:
@@ -247,7 +278,7 @@ class ServerListPanel(QWidget):
             else:
                 self._empty_widget.hide()
 
-            layout.addStretch()
+            layout.addItem(self._bottom_spacer)
             self._filter_current(query)
         finally:
             self._button_group.blockSignals(False)
@@ -289,7 +320,14 @@ class ServerListPanel(QWidget):
             item.set_ping(last_ms)
         elif id(server) in self._ping_pending:
             item.start_ping_animation()
+        is_selected = False
         if connected_server_key and getattr(server, "key", None) == connected_server_key:
+            is_selected = True
+        elif idx >= 0 and self._selected_index == idx:
+            is_selected = True
+        elif self._selected_key and server_identity(server) == self._selected_key:
+            is_selected = True
+        if is_selected:
             item.radio.setChecked(True)
 
     def _wire_delete_button(self, item, server):
@@ -302,15 +340,69 @@ class ServerListPanel(QWidget):
         item._delete_handler = lambda checked=False, srv=server: self._emit_deleted(srv)
         item.delete_button.clicked.connect(item._delete_handler)
 
+    def _ensure_scroll_connected(self):
+        self._virtualizer.ensure_scroll_connected(self._on_viewport_scrolled)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._ensure_scroll_connected()
+        self._on_viewport_scrolled()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._on_viewport_scrolled()
+
+    def _update_virtual_window_sync(self, take_fn=None):
+        self._virtualizer.update_virtual_window(take_fn)
+
+    def _sync_virtual_group_widgets(self, vg, new_first, new_last, take_fn=None):
+        self._virtualizer.sync_group_widgets(vg, new_first, new_last, take_fn)
+
+    def _on_viewport_scrolled(self, _val=None):
+        if not self._virtualizer.virtual_groups:
+            return
+        self.setUpdatesEnabled(False)
+        self._button_group.blockSignals(True)
+        try:
+            self._virtualizer.update_virtual_window()
+        finally:
+            self._button_group.blockSignals(False)
+            self.setUpdatesEnabled(True)
+
+    def _setup_virtual_item(self, item, srv, flat_idx):
+        item.radio.setChecked(False)
+        item.update_server(srv.name, srv, show_flags=self._show_flags)
+        self._wire_delete_button(item, srv)
+        if flat_idx >= 0:
+            self._button_group.addButton(item.radio, flat_idx)
+        last_ms = getattr(srv, "_last_ping", None)
+        if last_ms is not None:
+            item.set_ping(last_ms)
+        elif id(srv) in self._ping_pending:
+            item.start_ping_animation()
+        is_selected = False
+        if self._last_connected_key and getattr(srv, "key", None) == self._last_connected_key:
+            is_selected = True
+        elif flat_idx >= 0 and self._selected_index == flat_idx:
+            is_selected = True
+        elif self._selected_key and server_identity(srv) == self._selected_key:
+            is_selected = True
+        if is_selected:
+            item.radio.setChecked(True)
+
     def set_ping_display_mode(self, mode: int):
         self._ping_display_mode = int(mode)
         for item in self._server_items:
+            item.set_ping_display_mode(self._ping_display_mode)
+        for item in self._item_pool:
             item.set_ping_display_mode(self._ping_display_mode)
 
     def set_show_flags(self, show: bool):
         """Show or hide country flags in all rows (mobile showFlags parity)."""
         self._show_flags = bool(show)
         for item in self._server_items:
+            item.set_show_flags(self._show_flags)
+        for item in self._item_pool:
             item.set_show_flags(self._show_flags)
 
     def _emit_deleted(self, server):
@@ -402,10 +494,24 @@ class ServerListPanel(QWidget):
         )
         QThreadPool.globalInstance().start(job)
 
+    def _is_index_visible(self, idx: int) -> bool:
+        if not (0 <= idx < len(self._last_servers)):
+            return False
+        srv = self._last_servers[idx]
+        if self._last_groups:
+            query = self._query.strip().lower()
+            for g in self._last_groups:
+                expanded = (not bool(g.get("collapsed", False))) or bool(query)
+                if any(id(s) == id(srv) for s in g.get("servers", [])):
+                    return expanded
+        return True
+
     def get_selected_index(self):
         btn = self._button_group.checkedButton()
         if btn:
             return self._button_group.id(btn)
+        if self._selected_index >= 0 and self._is_index_visible(self._selected_index):
+            return self._selected_index
         return -1
 
     def set_selected_index(self, idx: int) -> bool:
@@ -415,9 +521,12 @@ class ServerListPanel(QWidget):
         restore the selection after :meth:`refresh` rebuilds the rows
         (collapse toggle, subscription update, ...).
         """
+        self._selected_index = idx
+        if 0 <= idx < len(self._last_servers):
+            self._selected_key = server_identity(self._last_servers[idx])
         btn = self._button_group.button(idx)
         if btn is None:
-            return False
+            return 0 <= idx < len(self._last_servers)
         self._button_group.blockSignals(True)
         try:
             btn.setChecked(True)
@@ -442,6 +551,8 @@ class ServerListPanel(QWidget):
         for card in self._group_cards:
             card.apply_theme(theme)
         for item in self._server_items:
+            item.apply_theme(theme)
+        for item in self._item_pool:
             item.apply_theme(theme)
 
     def _update_empty_view(self):

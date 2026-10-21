@@ -13,7 +13,7 @@ Features:
 """
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve
 
 from utils.i18n import tr
 from .floating_button import FloatingButton, FloatingAddButton, FloatingSearchButton
@@ -41,7 +41,7 @@ class TaskbarView(QWidget):
             (tr("nav.about"), "tab_about"),
         ]
 
-        self.setFixedHeight(64)
+        self.setFixedSize(324, 64)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -65,12 +65,51 @@ class TaskbarView(QWidget):
         self.fab.clicked.connect(self._on_fab_clicked)
         self.lay.addWidget(self.fab, 0, Qt.AlignVCenter)
 
+        self._buttons_progress = 1.0
+        self._buttons_anim = QPropertyAnimation(self, b"buttons_progress")
+        self._buttons_anim.setDuration(220)
+        self._buttons_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._buttons_anim.finished.connect(self._on_buttons_anim_finished)
+
         if theme:
             self.apply_theme(theme)
 
     @property
     def _selected_tab(self) -> int:
         return self._current_tab
+
+    def get_buttons_progress(self) -> float:
+        return self._buttons_progress
+
+    def set_buttons_progress(self, val: float):
+        p = max(0.0, min(1.0, float(val)))
+        self._buttons_progress = p
+        self.search_btn.set_anim_width(self._SEARCH_BTN_WIDTH * p)
+        self.search_btn.set_anim_opacity(p)
+        self.fab.set_anim_width(self.fab._default_width * p)
+        self.fab.set_anim_opacity(p)
+        self.lay.setSpacing(int(round(self._BASE_SPACING * p)))
+        self.setFixedWidth(int(round(self.capsule._NORMAL_WIDTH + (324 - self.capsule._NORMAL_WIDTH) * p)))
+        if p <= 0.001:
+            self.search_btn.setVisible(False)
+            self.fab.setVisible(False)
+        else:
+            self.search_btn.setVisible(True)
+            self.fab.setVisible(True)
+
+    buttons_progress = Property(float, get_buttons_progress, set_buttons_progress)
+
+    def _on_buttons_anim_finished(self):
+        if self._buttons_progress <= 0.001:
+            self.search_btn.setVisible(False)
+            self.fab.setVisible(False)
+            self.lay.setSpacing(0)
+            self.setFixedWidth(self.capsule._NORMAL_WIDTH)
+        elif self._buttons_progress >= 0.999:
+            self.search_btn.setVisible(True)
+            self.fab.setVisible(True)
+            self.lay.setSpacing(int(self._BASE_SPACING))
+            self.setFixedWidth(324)
 
     def _on_capsule_tab_selected(self, screen_idx: int):
         self.select_tab(screen_idx, animated=True)
@@ -89,8 +128,26 @@ class TaskbarView(QWidget):
         if self.is_search_open():
             self.set_search_open(False, animated=False)
         self.capsule.select_screen(index, animated=animated)
-        self.search_btn.set_expanded(index == 0, animated=animated)
-        self.fab.set_expanded(index == 0, animated=animated)
+
+        target_p = 1.0 if index == 0 else 0.0
+        if not animated:
+            self._buttons_anim.stop()
+            self.set_buttons_progress(target_p)
+        else:
+            if target_p == 1.0 and self._buttons_progress <= 0.001:
+                self.lay.setSpacing(0)
+                self.search_btn.set_anim_width(0.0)
+                self.fab.set_anim_width(0.0)
+                self.search_btn.set_anim_opacity(0.0)
+                self.fab.set_anim_opacity(0.0)
+                self.search_btn.setVisible(True)
+                self.fab.setVisible(True)
+            if abs(self._buttons_progress - target_p) > 0.001:
+                self._buttons_anim.stop()
+                self._buttons_anim.setStartValue(self._buttons_progress)
+                self._buttons_anim.setEndValue(target_p)
+                self._buttons_anim.start()
+
         self.tabChanged.emit(index)
 
     def set_search_open(self, open_: bool, animated: bool = True):
@@ -101,7 +158,15 @@ class TaskbarView(QWidget):
         if open_:
             # Hand the search button over to the capsule morph: pin it at full
             # size first so the progress signal drives it from 56px to 0.
-            self.search_btn.set_expanded(True, animated=False)
+            self._buttons_anim.stop()
+            self._buttons_progress = 1.0
+            self.setFixedWidth(324)
+            self.search_btn.setVisible(True)
+            self.search_btn.set_anim_width(self._SEARCH_BTN_WIDTH)
+            self.search_btn.set_anim_opacity(1.0)
+        else:
+            self.setFixedWidth(324)
+            self.search_btn.setVisible(True)
         self.capsule.set_search_mode(open_, animated=animated)
         self.fab.set_close_mode(open_)
         self.searchOpenChanged.emit(open_)
@@ -111,15 +176,13 @@ class TaskbarView(QWidget):
             self.searchClicked.emit()
 
     def _on_search_progress(self, progress: float):
-        """Morph the search button and the toolbar gap alongside the capsule.
-
-        The capsule grows by (search button width + one layout gap) while the
-        button collapses and the two gaps shrink into one, so the centered
-        toolbar keeps a constant total width instead of jumping sideways.
-        """
+        """Morph the search button alongside the capsule."""
         self.search_btn.set_anim_width(self._SEARCH_BTN_WIDTH * (1.0 - progress))
         self.search_btn.set_anim_opacity(1.0 - progress)
-        self.lay.setSpacing(int(round(self._BASE_SPACING * (1.0 - 0.5 * progress))))
+        if progress >= 0.999:
+            self.search_btn.setVisible(False)
+        else:
+            self.search_btn.setVisible(True)
 
     def is_search_open(self) -> bool:
         return self.capsule._search_open

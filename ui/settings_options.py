@@ -8,6 +8,7 @@ time), except USER_AGENT_OPTIONS whose labels are sent verbatim as the
 HTTP User-Agent header and must never be translated.
 """
 
+from utils.engines.singbox_config import MUX_PROTOCOLS
 from utils.platform_utils import get_socksicle_user_agent
 
 THEME_SWATCHES: list[tuple[str, str, str, bool]] = [
@@ -19,10 +20,9 @@ THEME_SWATCHES: list[tuple[str, str, str, bool]] = [
     ("custom", "opt.theme.custom", "#B388FF", False),
 ]
 
-RENDER_OPTIONS: list[tuple[str, str]] = [
-    ("auto", "opt.render.auto"),
-    ("software", "opt.render.software"),
-    ("opengl", "opt.render.opengl"),
+THEME_SPEC_OPTIONS: list[tuple[str, str]] = [
+    ("2021", "opt.theme_spec.2021"),
+    ("2025", "opt.theme_spec.2025"),
 ]
 
 ENGINE_IDS = ("auto", "sing-box", "xray")
@@ -31,6 +31,10 @@ ENGINE_OPTIONS: list[tuple[str, str]] = [
     ("auto", "opt.engine.auto"),
     ("sing-box", "opt.engine.singbox"),
     ("xray", "opt.engine.xray"),
+]
+
+MUX_OPTIONS: list[tuple[str, str]] = [
+    (protocol, f"opt.mux.{protocol}") for protocol in MUX_PROTOCOLS
 ]
 
 DNS_OPTIONS: list[tuple[str, str]] = [
@@ -89,4 +93,5 @@ LANGUAGE_OPTIONS: list[tuple[str, str]] = [
     ("ru", "Русский"),
     ("en", "English"),
     ("zh", "中文"),
+    ("he", "עברית (בטא)"),
 ]

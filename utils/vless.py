@@ -58,6 +58,8 @@ class VlessNode:
     quic_key: str = ""             # QUIC key
     alpn: list[str] = field(default_factory=list)
     insecure: bool = False
+    pinned_peer_cert_sha256: str = ""
+    verify_peer_cert_by_name: str = ""
     packet_encoding: str = "xudp"  # "xudp", "packetaddr", "none"
     is_private: bool = False
     raw_link: str = ""
@@ -127,6 +129,8 @@ def parse_vless_url(raw_url: str, default_name: str = "VLESS Server") -> VlessNo
     alpn_raw = _get(("alpn",))
     alpn = [x.strip() for x in alpn_raw.split(",") if x.strip()] if alpn_raw else []
     insecure = _get(("insecure", "allowInsecure", "skip-cert-verify")).lower() in ("1", "true", "yes", "on")
+    pcs = _get(("pcs", "pinnedPeerCertSha256", "pinned_peer_cert_sha256"))
+    pcn = _get(("pcn", "vcn", "verifyPeerCertByName", "verify_peer_cert_by_name"))
 
     return VlessNode(
         uuid=uuid_str, host=host, port=port, name=name,
@@ -147,6 +151,8 @@ def parse_vless_url(raw_url: str, default_name: str = "VLESS Server") -> VlessNo
         quic_security=_get(("quicSecurity", "quic_security")),
         quic_key=_get(("key", "quicKey", "quic_key")),
         alpn=alpn, insecure=insecure,
+        pinned_peer_cert_sha256=pcs,
+        verify_peer_cert_by_name=pcn,
         packet_encoding=_get(("packetEncoding", "packet_encoding"), "xudp"),
         raw_link=raw_url,
     )
@@ -193,7 +199,7 @@ def generate_singbox_vless_outbound(node: VlessNode, tag: str = "proxy") -> dict
             tls_block["server_name"] = sni
         if node.fingerprint:
             tls_block["utls"] = {"enabled": True, "fingerprint": node.fingerprint}
-        if node.insecure:
+        if node.insecure or node.pinned_peer_cert_sha256:
             tls_block["insecure"] = True
         alpn = node.alpn or _default_alpn(node.transport)
         if alpn:
@@ -244,6 +250,10 @@ def generate_xray_vless_outbound(node: VlessNode, tag: str = "proxy") -> dict:
             tls_settings["serverName"] = sni
         if node.fingerprint:
             tls_settings["fingerprint"] = node.fingerprint
+        if node.pinned_peer_cert_sha256:
+            tls_settings["pinnedPeerCertSha256"] = node.pinned_peer_cert_sha256
+        if node.verify_peer_cert_by_name:
+            tls_settings["verifyPeerCertByName"] = node.verify_peer_cert_by_name
         if node.insecure:
             tls_settings["allowInsecure"] = True
         alpn = node.alpn or _default_alpn(node.transport)
@@ -369,6 +379,8 @@ def to_server(node: VlessNode) -> Server:
         host_header=node.host_header,
         is_private=node.is_private,
         insecure=node.insecure,
+        pinned_peer_cert_sha256=node.pinned_peer_cert_sha256,
+        verify_peer_cert_by_name=node.verify_peer_cert_by_name,
     )
 
 
@@ -389,6 +401,8 @@ def from_server(server: Server) -> VlessNode:
         path=getattr(server, "path", "") or "",
         host_header=getattr(server, "host_header", "") or "",
         insecure=bool(getattr(server, "insecure", False)),
+        pinned_peer_cert_sha256=getattr(server, "pinned_peer_cert_sha256", "") or "",
+        verify_peer_cert_by_name=getattr(server, "verify_peer_cert_by_name", "") or "",
         is_private=bool(getattr(server, "is_private", False)),
         raw_link=getattr(server, "key", "") or "",
     )

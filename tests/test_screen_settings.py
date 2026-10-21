@@ -1,7 +1,7 @@
 """Unit tests for SettingsScreen Material 3 mobile hub architecture and ping display modes."""
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QColor, QKeyEvent
 
 from ui.screen_settings import SettingsScreen
 from ui.server_item import ServerItem
@@ -26,6 +26,7 @@ def test_settings_screen_hub_navigation():
     assert screen.card_hub.isHidden() is False
     assert screen.card_appearance.isHidden() is True
     assert screen.card_connection.isHidden() is True
+    assert screen.card_tunnel.isHidden() is True
     assert screen.card_ping.isHidden() is True
     assert screen.card_subs.isHidden() is True
     assert screen.card_system.isHidden() is True
@@ -177,6 +178,17 @@ def test_card_active_server_ping_display_modes():
     assert card0.ping_bars.isHidden() is False
 
 
+def test_card_active_ping_uses_accent_color():
+    from ui.card_active_server import CardActiveServer
+
+    theme = M3Theme(preset_key="emerald")
+    card = CardActiveServer(theme=theme, ping_display_mode=2)
+    card.set_latency(65.0)
+
+    assert theme.primary in card.ping_label.styleSheet()
+    assert card.ping_bars._active_color.name() == QColor(theme.primary).name()
+
+
 def test_engine_combo_lists_only_available_engines():
     theme = M3Theme(preset_key="lavender")
     settings = {"theme_preset": "lavender", "engine": "sing-box"}
@@ -228,7 +240,7 @@ def test_settings_ping_methods_match_engine():
 
 def test_settings_option_keys_unique():
     from ui import settings_options as opt
-    for table in (opt.RENDER_OPTIONS, opt.ENGINE_OPTIONS, opt.DNS_OPTIONS,
+    for table in (opt.ENGINE_OPTIONS, opt.DNS_OPTIONS,
                   opt.USER_AGENT_OPTIONS):
         keys = [key for key, _ in table]
         assert len(keys) == len(set(keys))
@@ -250,6 +262,24 @@ def test_language_lives_in_appearance_section():
     assert screen.lang_combo.count() == len(SUPPORTED_LANGUAGES)
 
 
+def test_theme_spec_combo_switches_spec_and_emits_theme_changed():
+    theme = M3Theme(preset_key="lavender")
+    settings = {"theme_preset": "lavender"}
+    screen = SettingsScreen(settings, theme)
+    screen.show()
+    screen.open_section("appearance", "Appearance")
+
+    assert screen.theme_spec_combo is not None
+    assert screen.theme_spec_combo.currentData() == "2021"
+
+    emitted = []
+    screen.themeChanged.connect(emitted.append)
+    screen.theme_spec_combo.setCurrentIndex(screen.theme_spec_combo.findData("2025"))
+
+    assert settings["theme_spec"] == "2025"
+    assert emitted == ["lavender"]
+
+
 def test_hy2_insecure_toggle_in_connection_section():
     theme = M3Theme(preset_key="lavender")
     settings = {"theme_preset": "lavender"}
@@ -266,20 +296,83 @@ def test_hy2_insecure_toggle_in_connection_section():
     assert screen.settings["hy2_insecure"] is True
 
 
-def test_block_udp_toggle_in_connection_section():
+def test_block_udp_toggle_in_tunnel_section():
     theme = M3Theme(preset_key="lavender")
     settings = {"theme_preset": "lavender"}
     screen = SettingsScreen(settings, theme)
     screen.show()
     assert screen.sw_block_udp is None
     screen.open_section("connection", "Connection")
+    assert screen.sw_block_udp is None
+    screen.open_section("tunnel", "Tunnel")
     assert screen.sw_block_udp is not None
+    assert screen.card_tunnel.isHidden() is False
 
     emitted = []
     screen.settingChanged.connect(lambda k, v: emitted.append((k, v)))
     screen.sw_block_udp.toggled.emit(True)
     assert ("block_udp", True) in emitted
     assert screen.settings["block_udp"] is True
+
+
+def test_fragmentation_and_mux_controls_in_tunnel_section():
+    theme = M3Theme(preset_key="lavender")
+    settings = {"theme_preset": "lavender"}
+    screen = SettingsScreen(settings, theme)
+    screen.show()
+    assert screen.sw_tls_fragment is None
+    assert screen.sw_mux is None
+    assert screen.mux_settings is None
+
+    screen.open_section("tunnel", "Tunnel")
+    assert screen.sw_tls_fragment is not None
+    assert screen.sw_mux is not None
+    assert screen.mux_settings is not None
+    assert screen.mux_settings.isHidden() is True
+    assert screen.mux_protocol_combo.currentData() == "h2mux"
+    assert screen.mux_max_conn_spin.value() == 4
+
+    emitted = []
+    screen.settingChanged.connect(lambda k, v: emitted.append((k, v)))
+
+    screen.sw_tls_fragment.toggled.emit(True)
+    assert ("tls_fragment", True) in emitted
+    assert settings["tls_fragment"] is True
+
+    screen.sw_mux.toggled.emit(True)
+    assert ("mux_enabled", True) in emitted
+    assert settings["mux_enabled"] is True
+    assert screen.mux_settings.isHidden() is False
+
+    screen.mux_protocol_combo.setCurrentIndex(
+        screen.mux_protocol_combo.findData("yamux"))
+    assert ("mux_protocol", "yamux") in emitted
+
+    screen.mux_max_conn_spin.setValue(8)
+    assert ("mux_max_connections", 8) in emitted
+
+    screen.sw_mux.toggled.emit(False)
+    assert ("mux_enabled", False) in emitted
+    assert screen.mux_settings.isHidden() is True
+
+
+def test_tunnel_settings_restore_saved_values():
+    theme = M3Theme(preset_key="lavender")
+    settings = {
+        "theme_preset": "lavender",
+        "tls_fragment": True,
+        "mux_enabled": True,
+        "mux_protocol": "smux",
+        "mux_max_connections": 12,
+    }
+    screen = SettingsScreen(settings, theme)
+    screen.show()
+    screen.open_section("tunnel", "Tunnel")
+    assert screen.sw_tls_fragment.isChecked() is True
+    assert screen.sw_mux.isChecked() is True
+    assert screen.mux_settings.isHidden() is False
+    assert screen.mux_protocol_combo.currentData() == "smux"
+    assert screen.mux_max_conn_spin.value() == 12
 
 
 def test_socks5_port_lives_in_connection_section():
@@ -427,6 +520,26 @@ def test_custom_swatch_button_renders_plus_sign(qapp):
     assert btn._selected is True
 
 
+def test_dynamic_swatch_button_uses_wallpaper_derived_colors(qapp):
+    """Verify that ThemeSwatchButton with is_dynamic=True displays 4 dynamic colors."""
+    from ui.screen_settings import ThemeSwatchButton, SettingsScreen
+    sample_colors = ["#cbc7b5", "#ccc7ac", "#cdc7a3", "#4a4733"]
+    btn = ThemeSwatchButton("dynamic", "Dynamic", "#E2703C", is_dynamic=True, dynamic_colors=sample_colors)
+    btn.resize(38, 38)
+    assert btn.dynamic_colors == sample_colors
+    btn.repaint()
+
+    theme = M3Theme(preset_key="dynamic")
+    settings = {"theme_preset": "dynamic"}
+    screen = SettingsScreen(settings, theme)
+    screen._build_appearance()
+    dyn_swatch = screen._swatches[0]
+    assert dyn_swatch.is_dynamic is True
+    assert len(dyn_swatch.dynamic_colors) == 4
+    assert dyn_swatch.dynamic_colors[1] == theme.primary
+
+
+
 def test_dns_combo_preset_updates_custom_dns():
     from ui.settings_options import DNS_PRESET_URLS
     theme = M3Theme(preset_key="lavender")
@@ -477,6 +590,8 @@ def test_settings_hub_segmented_groups_and_roles():
     assert screen.group_network.layout().spacing() == 3
     assert screen.hub_row_connection.position == "top"
     assert screen.hub_row_connection.role == "primary"
+    assert screen.hub_row_tunnel.position == "middle"
+    assert screen.hub_row_tunnel.role == "primary"
     assert screen.hub_row_ping.position == "middle"
     assert screen.hub_row_ping.role == "primary"
     assert screen.hub_row_subs.position == "bottom"
@@ -506,7 +621,7 @@ def test_settings_hub_live_values_ping_and_connection():
     screen.show()
 
     # Check ping live value: method, timeout (seconds), display mode
-    assert screen.hub_row_ping.subtitle_text == "TCP-HEAD, 3 сек, Цифры"
+    assert screen.hub_row_ping.subtitle_text == "HTTP-HEAD, 3 сек, Цифры"
 
     # Check connection live value and TUN badge
     assert screen.hub_row_connection.subtitle_text == "2080, Kill Switch, xray"
@@ -568,6 +683,7 @@ def test_settings_hub_chevrons_aligned():
 
     rows = [
         screen.hub_row_connection,
+        screen.hub_row_tunnel,
         screen.hub_row_ping,
         screen.hub_row_subs,
         screen.hub_row_appearance,

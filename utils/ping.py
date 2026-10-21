@@ -10,9 +10,16 @@ import time
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
-import socks
 from PySide6.QtCore import QRunnable
-from .thp import Thp, ProbeQuality, ThpResult
+from .thp import (
+    Thp,
+    ProbeQuality,
+    ThpResult,
+    _configure_tcp_socket,
+    _configure_udp_socket,
+    _run_coroutine_sync,
+    parse_target_endpoint,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,30 +37,7 @@ PING_PROBE_PORT = 80
 DEFAULT_PING_METHOD = "thp"
 DEFAULT_PING_TIMEOUT = 3.0
 PING_TIMEOUTS = {"thp": 2.5, "tcp_connect": 2.0, "http_head": 3.0, "http_get": 3.0}
-# Max concurrent probes in a batch ping. Each THP probe holds a TCP socket +
-# a TLS session + an HTTP exchange, so 20 (instead of 50) halves the peak
-# socket/TLS/memory pressure; the full-list sweep just takes ~2x longer.
 DEFAULT_PING_CONCURRENCY = 20
-
-
-def _configure_tcp_socket(sock: socket.socket) -> None:
-    """Apply low-latency socket optimizations (TCP_NODELAY, SO_REUSEADDR)."""
-    try:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except (OSError, AttributeError):
-        pass
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    except (OSError, AttributeError):
-        pass
-
-
-def _configure_udp_socket(sock: socket.socket) -> None:
-    """Apply socket optimizations for UDP/QUIC datagrams."""
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    except (OSError, AttributeError):
-        pass
 
 
 def _build_socks5_connect_request(host: str, port: int) -> bytes:
@@ -126,90 +110,44 @@ def parse_ping_url(url: str | None) -> tuple[str, str, int, bool]:
         return (PING_PROBE_HOST, PING_PROBE_PATH, PING_PROBE_PORT, False)
 
 
-def _http_probe_target(host_header, path, s, method, timeout):
-    req = (
+def _build_http_request(host_header: str, path: str, method: str) -> bytes:
+    return (
         f"{method} {path} HTTP/1.1\r\n"
         f"Host: {host_header}\r\n"
         f"User-Agent: {HTTP_USER_AGENT}\r\n"
         "Accept: */*\r\n"
         "Connection: close\r\n\r\n"
     ).encode("ascii")
-    s.sendall(req)
-    buffer = b""
-    for _ in range(64):
-        chunk = s.recv(1024)
-        if not chunk:
-            break
-        buffer += chunk
-        if buffer.startswith(b"HTTP/") and b"\r\n\r\n" in buffer:
-            status_line = buffer.split(b"\r\n", 1)[0]
-            parts = status_line.split(b" ")
-            if len(parts) >= 2:
-                try:
-                    code = int(parts[1])
-                    if code == 429:
-                        log.debug("HTTP probe to %s returned 429 rate limit", host_header)
-                        return False
-                    if 200 <= code < 400 or code == 204:
-                        return True
-                except ValueError:
-                    pass
+
+
+def _http_probe_succeeded(buffer: bytes) -> bool | None:
+    """Return True/False once headers are complete, or None while incomplete."""
+    if not (buffer.startswith(b"HTTP/") and b"\r\n\r\n" in buffer):
+        return None
+    status_line = buffer.split(b"\r\n", 1)[0]
+    parts = status_line.split(b" ")
+    if len(parts) >= 2:
+        try:
+            code = int(parts[1])
+        except ValueError:
             return True
-    return False
+        if code == 429:
+            return False
+    return True
 
 
 def http_ping_via_socks5_once(host, socks5_port, timeout=3, method="GET", url=None):
     """Measure round-trip latency through a local SOCKS5 proxy."""
-    method = "GET" if method.upper() not in ("GET", "HEAD") else method.upper()
-    if url:
-        custom_target = parse_ping_url(url)
-        targets = [custom_target]
-        for t in DEFAULT_PROBE_TARGETS:
-            if t != custom_target:
-                targets.append(t)
-    else:
-        targets = DEFAULT_PROBE_TARGETS
-
-    for probe_host, probe_path, probe_port, is_ssl in targets:
-        s = socks.socksocket()
-        _configure_tcp_socket(s)
-        s.set_proxy(socks.SOCKS5, "127.0.0.1", socks5_port)
-        s.settimeout(timeout)
-        try:
-            start = time.monotonic()
-            s.connect((probe_host, probe_port))
-            if is_ssl:
-                ctx = ssl.create_default_context()
-                s = ctx.wrap_socket(s, server_hostname=probe_host)
-            if _http_probe_target(probe_host, probe_path, s, method, timeout):
-                return (time.monotonic() - start) * 1000
-        except (socket.error, OSError, socks.SOCKS5Error, TimeoutError, ssl.SSLError) as e:
-            log.debug("SOCKS5 ping to %s via %s failed: %s", host, probe_host, e)
-        except Exception as e:
-            log.debug("SOCKS5 ping to %s via %s unexpected failure: %s", host, probe_host, e)
-        finally:
-            s.close()
-    return None
+    return _run_coroutine_sync(
+        async_http_ping_via_socks5_once(
+            host, socks5_port, timeout=timeout, method=method, url=url))
 
 
 def tcp_connect_ping_via_socks5(host, socks5_port, timeout=2, port=PING_PROBE_PORT):
     """Measure latency until the SOCKS5 CONNECT reply (one remote RTT)."""
-    s = socks.socksocket()
-    _configure_tcp_socket(s)
-    s.set_proxy(socks.SOCKS5, "127.0.0.1", socks5_port)
-    s.settimeout(timeout)
-    try:
-        start = time.monotonic()
-        s.connect((host, port))
-        return (time.monotonic() - start) * 1000
-    except (socket.error, OSError, socks.SOCKS5Error, TimeoutError) as e:
-        log.debug("SOCKS5 TCP ping to %s failed: %s", host, e)
-        return None
-    except Exception as e:
-        log.debug("SOCKS5 TCP ping to %s unexpected failure: %s", host, e)
-        return None
-    finally:
-        s.close()
+    return _run_coroutine_sync(
+        async_tcp_connect_ping_via_socks5(
+            host, socks5_port, timeout=timeout, port=port))
 
 
 def ping_via_socks5(host, socks5_port, method="http_get", timeout=None, url=None):
@@ -302,27 +240,14 @@ async def async_direct_quic_ping(host: str, port: int, timeout: float = 2.0) -> 
 
 async def async_direct_tcp_ping(host: str, port: int, timeout: float = 2.0) -> float | None:
     """Direct non-blocking TCP ping to server IP/Port asynchronously."""
-    start = time.monotonic()
-    writer = None
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, int(port)),
-            timeout=timeout
-        )
-        sock = writer.get_extra_info("socket")
-        if sock:
-            _configure_tcp_socket(sock)
-        return (time.monotonic() - start) * 1000
+        res = await Thp.async_probe(host, int(port), timeout_sec=timeout, attempts=1)
+        if res.quality != ProbeQuality.FAILED and res.transport_rtt_ms >= 0:
+            return res.transport_rtt_ms
+        return None
     except Exception as e:
         log.debug("Async direct TCP ping to %s:%s failed: %s", host, port, e)
         return None
-    finally:
-        if writer:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except (OSError, RuntimeError):
-                pass
 
 
 async def async_direct_http_ping(
@@ -354,14 +279,7 @@ async def async_direct_http_ping(
             _configure_tcp_socket(sock)
 
         try:
-            req = (
-                f"{method} {path} HTTP/1.1\r\n"
-                f"Host: {host}\r\n"
-                f"User-Agent: {HTTP_USER_AGENT}\r\n"
-                "Accept: */*\r\n"
-                "Connection: close\r\n\r\n"
-            ).encode("ascii")
-            writer.write(req)
+            writer.write(_build_http_request(host, path, method))
             await writer.drain()
 
             buffer = b""
@@ -467,14 +385,7 @@ async def async_http_ping_via_socks5_once(
                 writer._transport = tls_transport
 
             # 3. HTTP probe
-            http_req = (
-                f"{method} {probe_path} HTTP/1.1\r\n"
-                f"Host: {probe_host}\r\n"
-                f"User-Agent: {HTTP_USER_AGENT}\r\n"
-                "Accept: */*\r\n"
-                "Connection: close\r\n\r\n"
-            ).encode("ascii")
-            writer.write(http_req)
+            writer.write(_build_http_request(probe_host, probe_path, method))
             await writer.drain()
 
             buffer = b""
@@ -484,22 +395,11 @@ async def async_http_ping_via_socks5_once(
                 if not chunk:
                     break
                 buffer += chunk
-                if buffer.startswith(b"HTTP/") and b"\r\n\r\n" in buffer:
-                    status_line = buffer.split(b"\r\n", 1)[0]
-                    parts = status_line.split(b" ")
-                    if len(parts) >= 2:
-                        try:
-                            code = int(parts[1])
-                            if code == 429:
-                                log.debug("Async HTTP probe to %s returned 429 rate limit", probe_host)
-                                success = False
-                                break
-                            if 200 <= code < 400 or code == 204:
-                                success = True
-                                break
-                        except ValueError:
-                            pass
-                    success = True
+                verdict = _http_probe_succeeded(buffer)
+                if verdict is not None:
+                    if not verdict:
+                        log.debug("Async HTTP probe to %s returned 429 rate limit", probe_host)
+                    success = verdict
                     break
             if success:
                 return (time.monotonic() - start) * 1000
@@ -518,7 +418,8 @@ async def async_http_ping_via_socks5_once(
 async def async_tcp_connect_ping_via_socks5(
     host: str,
     socks5_port: int,
-    timeout: float = 2.0
+    timeout: float = 2.0,
+    port: int = PING_PROBE_PORT,
 ) -> float | None:
     """Measure latency until the SOCKS5 CONNECT reply asynchronously."""
     start = time.monotonic()
@@ -540,7 +441,7 @@ async def async_tcp_connect_ping_via_socks5(
             return None
 
         # 2. Connect
-        req = _build_socks5_connect_request(host, PING_PROBE_PORT)
+        req = _build_socks5_connect_request(host, port)
         writer.write(req)
         await writer.drain()
         if not await asyncio.wait_for(_read_socks5_reply(reader), timeout=timeout):
@@ -601,7 +502,9 @@ async def async_ping_server_job(
             ms = float(res.thp_score_ms) if res.quality != ProbeQuality.FAILED else None
         elif method == "tcp_connect":
             if socks5_port is not None and await async_socks5_proxy_ready(socks5_port, timeout=0.5):
-                ms = await async_tcp_connect_ping_via_socks5(host, socks5_port, timeout=eff_timeout)
+                _, _, probe_port, _ = parse_ping_url(url)
+                ms = await async_tcp_connect_ping_via_socks5(
+                    host, socks5_port, timeout=eff_timeout, port=probe_port)
             else:
                 ms = await async_direct_tcp_ping(host, port, timeout=eff_timeout)
         elif socks5_port is not None and await async_socks5_proxy_ready(socks5_port, timeout=0.5):
@@ -628,27 +531,7 @@ async def async_ping_server_job(
 
 def _extract_server_info(srv: Any) -> tuple[str, int, Any]:
     """Extract (host, port, protocol) from Server object, dict, or tuple."""
-    if hasattr(srv, "host"):
-        host = getattr(srv, "host", "") or ""
-        port = getattr(srv, "port", 80)
-        protocol = getattr(srv, "protocol", None)
-    elif isinstance(srv, dict):
-        host = srv.get("host", "")
-        port = srv.get("port", 80)
-        protocol = srv.get("protocol", None)
-    elif isinstance(srv, (list, tuple)):
-        host = srv[0] if len(srv) > 0 else ""
-        port = srv[1] if len(srv) > 1 else 80
-        protocol = srv[2] if len(srv) > 2 else None
-    else:
-        host = str(srv)
-        port = 80
-        protocol = None
-    try:
-        port = int(port)
-    except (ValueError, TypeError):
-        port = 80
-    return str(host), port, protocol
+    return parse_target_endpoint(srv, default_port=80)
 
 
 async def async_ping_all(

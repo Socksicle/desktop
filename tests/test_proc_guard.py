@@ -31,31 +31,18 @@ def _sleep_proc():
 
 class FreePortTest(unittest.TestCase):
 
-    def test_port_available_when_free(self):
+    def test_port_available(self):
         port = _free_port()
         self.assertTrue(pg.port_available("127.0.0.1", port))
-
-    def test_port_available_when_busy(self):
-        port = _free_port()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", port))
             s.listen(1)
             self.assertFalse(pg.port_available("127.0.0.1", port))
 
-    def test_pick_preferred_when_free(self):
+    def test_pick_free_port(self):
         port = _free_port()
         self.assertEqual(pg.pick_free_port(port), port)
 
-    def test_pick_preferred_when_busy(self):
-        busy = _free_port()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", busy))
-            s.listen(1)
-            chosen = pg.pick_free_port(busy)
-        self.assertNotEqual(chosen, busy)
-        self.assertTrue(pg.port_available("127.0.0.1", chosen))
-
-    def test_pick_after_preferred_freed_returns_preferred(self):
         busy = _free_port()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", busy))
@@ -64,35 +51,29 @@ class FreePortTest(unittest.TestCase):
             b = pg.pick_free_port(busy)
             self.assertNotEqual(a, busy)
             self.assertEqual(a, b)
-        after = pg.pick_free_port(busy)
-        self.assertEqual(after, busy)
+            self.assertTrue(pg.port_available("127.0.0.1", a))
+        # After busy port is freed, it can be picked again
+        self.assertEqual(pg.pick_free_port(busy), busy)
 
-    def test_wait_for_port_available_when_free(self):
+    def test_wait_for_port_available(self):
         port = _free_port()
-        self.assertTrue(pg.wait_for_port_available("127.0.0.1", port, timeout=0.5))
+        self.assertTrue(pg.wait_for_port_available("127.0.0.1", port, timeout=0.1))
 
-    def test_wait_for_port_available_timeout_when_busy(self):
-        port = _free_port()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", port))
-            s.listen(1)
-            self.assertFalse(pg.wait_for_port_available("127.0.0.1", port, timeout=0.1))
-
-    def test_wait_for_port_available_succeeds_when_freed(self):
-        port = _free_port()
+        # Timeout when busy
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind(("127.0.0.1", port))
         s.listen(1)
+        self.assertFalse(pg.wait_for_port_available("127.0.0.1", port, timeout=0.05))
 
+        # Succeeds when freed by background thread
+        import threading
         def _delayed_close():
             import time
-            time.sleep(0.1)
+            time.sleep(0.02)
             s.close()
-
-        import threading
         t = threading.Thread(target=_delayed_close)
         t.start()
-        res = pg.wait_for_port_available("127.0.0.1", port, timeout=1.0)
+        res = pg.wait_for_port_available("127.0.0.1", port, timeout=0.5)
         t.join()
         self.assertTrue(res)
 
@@ -111,31 +92,29 @@ class MarkerTest(unittest.TestCase):
     def _marker(self, name="xray"):
         return self.root / pg.STATE_DIR_NAME / f"{name}.pid"
 
-    def test_write_read_roundtrip(self):
+    def test_write_read_and_remove_marker(self):
         pg.write_pid_marker("xray", 4242, "C:/bin/xray.exe")
         marker = pg.read_pid_marker("xray")
         self.assertEqual(marker["pid"], 4242)
         self.assertEqual(marker["binary"], "C:/bin/xray.exe")
         self.assertEqual(marker["engine"], "xray")
 
-    def test_read_missing_returns_none(self):
+        pg.remove_pid_marker("xray")
+        self.assertFalse(self._marker().exists())
+
+    def test_read_invalid_or_missing_returns_none(self):
         self.assertIsNone(pg.read_pid_marker("nonexistent"))
 
-    def test_read_corrupt_returns_none(self):
         pg.marker_path("xray").parent.mkdir(parents=True, exist_ok=True)
         self._marker().write_text("not json", encoding="utf-8")
         self.assertIsNone(pg.read_pid_marker("xray"))
 
-    def test_read_bad_pid_returns_none(self):
         pg.write_pid_marker("xray", 0, "C:/bin/xray.exe")
         self.assertIsNone(pg.read_pid_marker("xray"))
 
-    def test_read_bool_pid_returns_none(self):
-        pg.marker_path("xray").parent.mkdir(parents=True, exist_ok=True)
-        self._marker().write_text(json.dumps({"pid": True, "binary": "C:/bin/xray.exe"}), encoding="utf-8")
-        self.assertIsNone(pg.read_pid_marker("xray"))
-        self._marker().write_text(json.dumps({"pid": False, "binary": "C:/bin/xray.exe"}), encoding="utf-8")
-        self.assertIsNone(pg.read_pid_marker("xray"))
+        for invalid_pid in (True, False):
+            self._marker().write_text(json.dumps({"pid": invalid_pid, "binary": "C:/bin/xray.exe"}), encoding="utf-8")
+            self.assertIsNone(pg.read_pid_marker("xray"))
 
     def test_paths_match_non_string_returns_false(self):
         self.assertFalse(pg._paths_match(["bad", "list"], "C:/bin/xray.exe"))
@@ -144,11 +123,6 @@ class MarkerTest(unittest.TestCase):
         self.assertFalse(pg._paths_match(True, "C:/bin/xray.exe"))
         self.assertFalse(pg._paths_match(None, "C:/bin/xray.exe"))
         self.assertFalse(pg._paths_match("C:/bin/xray.exe", None))
-
-    def test_remove_marker(self):
-        pg.write_pid_marker("xray", 1, "C:/bin/xray.exe")
-        pg.remove_pid_marker("xray")
-        self.assertFalse(self._marker().exists())
 
 
 class CleanupTest(unittest.TestCase):
@@ -284,7 +258,7 @@ class WindowsCommandPathsTest(unittest.TestCase):
             c.start()
         self.addCleanup(lambda: [c.stop() for c in ctx])
 
-    def test_process_alive_win32_running_process(self):
+    def test_process_alive_win32(self):
         with mock.patch.object(pg, "is_windows", return_value=True), \
              mock.patch.object(pg, "_win_open_process", return_value=0x1234) as open_proc, \
              mock.patch.object(pg, "_win_process_exit_code", return_value=259) as exit_code, \
@@ -294,15 +268,12 @@ class WindowsCommandPathsTest(unittest.TestCase):
         exit_code.assert_called_once_with(0x1234)
         close.assert_called_once_with(0x1234)
 
-    def test_process_alive_win32_exited_process(self):
         self._win(exit=1)
         self.assertFalse(pg.process_alive(4242))
 
-    def test_process_alive_win32_missing_process(self):
         self._win(open=None, err=2)
         self.assertFalse(pg.process_alive(4242))
 
-    def test_process_alive_win32_access_denied_means_alive(self):
         self._win(open=None, err=5)
         self.assertTrue(pg.process_alive(4242))
 
@@ -436,6 +407,7 @@ class EngineStartGuardTest(unittest.TestCase):
             s.listen(1)
             with mock.patch.object(engine, "find_binary",
                                    return_value=Path("C:/fake/xray.exe")), \
+                 mock.patch("utils.engines.base.wait_for_port_available", return_value=False), \
                  mock.patch.object(pg.subprocess, "Popen") as popen:
                 ok = engine.start(server)
         self.assertFalse(ok)

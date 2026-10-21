@@ -1,10 +1,34 @@
 """Shared pytest fixtures for the Socksicle test suite."""
 import os
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Force offscreen even when the developer shell exports wayland/xcb: tests
+# call .show() on widgets and must never paint on the real desktop.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+
+_PRIVILEGED_LAUNCHERS = {"pkexec", "sudo", "gksu", "gksudo", "kdesudo"}
+
+
+@pytest.fixture(autouse=True)
+def _forbid_privileged_commands(monkeypatch):
+    """Fail the test instead of opening a Polkit/UAC password prompt."""
+    import subprocess
+
+    def guarded(real):
+        def wrapper(args, *a, **kw):
+            cmd = args[0] if isinstance(args, (list, tuple)) and args else args
+            if isinstance(cmd, (str, bytes, os.PathLike)):
+                name = os.path.basename(os.fsdecode(cmd))
+                if name in _PRIVILEGED_LAUNCHERS:
+                    raise AssertionError(
+                        f"test tried to launch privileged command {name!r}: {args!r}")
+            return real(args, *a, **kw)
+        return wrapper
+
+    monkeypatch.setattr(subprocess, "run", guarded(subprocess.run))
+    monkeypatch.setattr(subprocess, "Popen", guarded(subprocess.Popen))
 
 
 @pytest.fixture(scope="session")
@@ -14,6 +38,17 @@ def qapp():
     if inst is None:
         inst = QApplication([])
     yield inst
+
+
+@pytest.fixture(autouse=True)
+def _mock_system_tray_and_elevation(monkeypatch):
+    """Prevent tests from spawning desktop tray icons or triggering polkit dialogs."""
+    from PySide6.QtWidgets import QSystemTrayIcon
+    monkeypatch.setattr(QSystemTrayIcon, "show", lambda self: None)
+    monkeypatch.setattr(QSystemTrayIcon, "setVisible", lambda self, v: None)
+    from utils.theme import M3Theme
+    monkeypatch.setattr(M3Theme, "_get_linux_wallpaper_accent_color", lambda self: None)
+
 
 
 @pytest.fixture(autouse=True)

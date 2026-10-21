@@ -62,6 +62,24 @@ class TestParseVlessLink:
         assert s.server_name == "cdn.example.com"
         assert s.name == "TLS WS"
 
+    def test_vless_pcs_pinned_peer_cert(self):
+        link = (
+            "vless://a40247ab-6288-4b7b-8f47-1903ea90752f@185.188.30.219:506"
+            "?encryption=none&security=tls&sni=www.google.com&fp=chrome"
+            "&pcs=08%3A1E%3A1A%3A29%3A3E%3A9A%3AE9%3AEE%3AE8%3AF3%3AEF%3A00"
+            "&pcn=test.name&type=tcp#Finland"
+        )
+        s = parse_link(link)
+        assert s is not None
+        assert s.pinned_peer_cert_sha256 == "08:1E:1A:29:3E:9A:E9:EE:E8:F3:EF:00"
+        assert s.verify_peer_cert_by_name == "test.name"
+
+    def test_vless_pinsha256_alias(self):
+        link = "vless://uuid-test@65.109.190.99:507?encryption=none&security=tls&type=tcp&sni=www.google.com&pinSHA256=aabbcc#TestPin"
+        s = parse_link(link)
+        assert s is not None
+        assert s.pinned_peer_cert_sha256 == "aabbcc"
+
     def test_vless_no_security(self):
         link = "vless://uuid@1.2.3.4:1080?security=none&type=tcp#NoSec"
         s = parse_link(link)
@@ -319,6 +337,32 @@ class TestServerModelRoundTrip:
         s3 = Server(protocol=ProxyProtocol.SHADOWSOCKS)
         assert s3.display_protocol == "SHADOWSOCKS"
 
+    def test_pinned_cert_to_dict_roundtrip(self):
+        s = Server(
+            key="vless://...", name="V", host="h", port=443,
+            protocol=ProxyProtocol.VLESS, uuid="u",
+            security="tls", pinned_peer_cert_sha256="aa:bb:cc",
+            verify_peer_cert_by_name="cert.name",
+        )
+        d = s.to_dict()
+        assert d["pinned_peer_cert_sha256"] == "aa:bb:cc"
+        assert d["verify_peer_cert_by_name"] == "cert.name"
+        s2 = Server.from_dict(d)
+        assert s2.pinned_peer_cert_sha256 == "aa:bb:cc"
+        assert s2.verify_peer_cert_by_name == "cert.name"
+
+    def test_from_dict_heals_from_link_key(self):
+        raw_vless = "vless://u@1.2.3.4:443?security=tls&pcs=11:22:33&pcn=cert#Test"
+        d_legacy = {"key": raw_vless, "name": "Test", "host": "1.2.3.4", "port": 443, "protocol": "vless"}
+        s = Server.from_dict(d_legacy)
+        assert s.pinned_peer_cert_sha256 == "11:22:33"
+        assert s.verify_peer_cert_by_name == "cert"
+
+        raw_trojan = "trojan://pass@1.2.3.4:443?security=none#TrojanNoSec"
+        d_trojan = {"key": raw_trojan, "name": "Trojan", "host": "1.2.3.4", "port": 443, "protocol": "trojan", "security": "tls"}
+        s_tr = Server.from_dict(d_trojan)
+        assert s_tr.security == "none"
+
 
 
 
@@ -349,6 +393,25 @@ class TestParseTrojanLink:
         assert s.server_name == "sni.com"
         assert s.insecure is True
         assert s.name == "TrojanWS"
+
+    def test_trojan_security_none(self):
+        link = "trojan://RNNbIv83Iuq87vdO1Es2kFUcQFaw-2Ys@185.188.30.219:32087?security=none&type=tcp&headerType=none#Netherlands"
+        s = parse_link(link)
+        assert s is not None
+        assert s.protocol == ProxyProtocol.TROJAN
+        assert s.security == "none"
+        assert s.password == "RNNbIv83Iuq87vdO1Es2kFUcQFaw-2Ys"
+        assert s.transport == "tcp"
+
+
+class TestParseHysteria2Link:
+    def test_hy2_pcs_pinsha256(self):
+        link = "hy2://secret@1.2.3.4:443?sni=www.google.com&pinSHA256=11:22:33&pcn=cert.name#Hy2Pin"
+        s = parse_link(link)
+        assert s is not None
+        assert s.protocol == ProxyProtocol.HYSTERIA2
+        assert s.pinned_peer_cert_sha256 == "11:22:33"
+        assert s.verify_peer_cert_by_name == "cert.name"
 
 
 class TestParseTuicLink:

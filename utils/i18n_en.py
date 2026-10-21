@@ -24,7 +24,7 @@ STRINGS = {
     "groups.manual": "My servers",
     # Server list / empty state
     "servers.empty_title": "No servers yet",
-    "servers.empty_hint": "Tap «+» at the top to add a server or subscription",
+    "servers.empty_hint": "Tap «+» at the bottom to add a server or subscription",
     "servers.search_empty": "No servers found",
     "servers.search_empty_hint": "Try a different search query",
     # Tray
@@ -242,6 +242,8 @@ STRINGS = {
     "set.hub_appearance_sub": "Colors, themes, scroll direction",
     "set.hub_connection": "Connection",
     "set.hub_connection_sub": "Proxy core, TUN, Kill Switch, DNS, SOCKS5 port",
+    "set.hub_tunnel": "Tunnel",
+    "set.hub_tunnel_sub": "UDP blocking, fragmentation, MUX",
     "set.hub_ping": "Ping",
     "set.hub_ping_sub": "Latency method, display, timeout",
     "set.hub_subs": "Subscription",
@@ -250,6 +252,7 @@ STRINGS = {
     "set.hub_system_sub": "Autostart, tray, event log",
     "set.amoled": "AMOLED Pure Dark",
     "set.amoled_sub": "Pure black background (#000000)",
+    "set.theme_spec": "Material color spec",
     "set.invert": "Invert scrolling",
     "set.invert_sub": "Alternative mouse wheel direction",
     "set.card_server": "Selected server card",
@@ -258,7 +261,6 @@ STRINGS = {
     "set.card_ip_sub": "Show IP address and session timer when connected",
     "set.flags": "Country flags",
     "set.flags_sub": "Show country flags next to servers",
-    "set.render_label": "Graphics renderer",
     "set.restart_hint": "Applies after app restart",
     "set.engine_label": "Proxy core",
     "set.tun": "TUN Mode",
@@ -281,6 +283,13 @@ STRINGS = {
     "set.hy2insecure_sub": "Allow self-signed Hy2 certificates. Unsafe: enable only for your own servers",
     "set.blockudp": "Block UDP",
     "set.blockudp_sub": "Drop UDP traffic, keep TCP only (applies after reconnect)",
+    "set.fragmentation": "TLS fragmentation",
+    "set.fragmentation_sub": "Bypass DPI by splitting the TLS handshake (sing-box)",
+    "set.mux": "Multiplexing (MUX)",
+    "set.mux_sub": "Carry several streams over one connection to cut handshake overhead (sing-box)",
+    "set.mux_protocol": "MUX protocol",
+    "set.mux_max_conn": "MUX max connections",
+    "set.mux_max_conn_sub": "Parallel multiplexed connections (1-16)",
     "set.dns_label": "Secure DNS (DoH / DoT)",
     "set.dns_custom_ph": "https://... or tls://...",
     "set.ua_label": "Subscription User-Agent",
@@ -313,12 +322,14 @@ STRINGS = {
     "opt.theme.emerald": "Emerald Forest",
     "opt.theme.coral": "Sunset Coral",
     "opt.theme.custom": "Custom",
-    "opt.render.auto": "Automatic (default)",
-    "opt.render.software": "Software (compatible, less VRAM)",
-    "opt.render.opengl": "Hardware OpenGL",
+    "opt.theme_spec.2021": "SPEC_2021",
+    "opt.theme_spec.2025": "SPEC_2025",
     "opt.engine.auto": "Auto Select",
     "opt.engine.singbox": "sing-box",
     "opt.engine.xray": "Xray-core",
+    "opt.mux.h2mux": "h2mux (recommended)",
+    "opt.mux.smux": "smux",
+    "opt.mux.yamux": "yamux",
     "opt.dns.system": "System / default",
     "opt.dns.cloudflare": "Cloudflare DoH (1.1.1.1)",
     "opt.dns.quad9": "Quad9 DoH (9.9.9.9)",
@@ -326,7 +337,7 @@ STRINGS = {
     "opt.dns.google": "Google DoH (8.8.8.8)",
     "opt.dns.custom": "Custom DNS (DoH / DoT)...",
     "opt.ping.thp": "THP (recommended)",
-    "opt.ping.thp_sub": "Combined TCP + HEAD score (recommended)",
+    "opt.ping.thp_sub": "Median TCP handshake time across attempts (recommended)",
     "opt.ping.tcp": "TCP connect",
     "opt.ping.tcp_sub": "Quick port availability check",
     "opt.ping.head": "HTTP HEAD",
@@ -341,11 +352,12 @@ STRINGS = {
     "opt.display.both_sub": "Indicator and numeric value",
     "ping.thp_help_title": "What is THP?",
     "ping.thp_help_text": (
-        "THP (TCP-HEAD Probe) is Socksicle's own check: a TCP connection "
-        "plus a HEAD request over a single connection, no TLS.\n\n"
-        "The score combines TCP time and weighted HTTP time. "
-        "Hysteria2 nodes are probed with QUIC datagrams. "
-        "The check bypasses the tunnel, so the number shows the server's direct speed. "
-        "If TCP passes but HTTP does not, the node counts as reachable with a reduced score."
+        "THP (TCP Handshake Probe) is Socksicle's own check: several TCP connections "
+        "to the server, with no TLS and no HTTP request.\n\n"
+        "The score is the median of successful TCP handshakes. If only some attempts succeed, "
+        "the node is marked unstable; if none succeed, it is marked unreachable. "
+        "The check runs directly, bypassing the tunnel, so the number shows the server's direct latency. "
+        "Hysteria2 nodes do not use THP: they are probed separately via QUIC, "
+        "HTTP through the tunnel, or TCP."
     ),
 }

@@ -57,6 +57,8 @@ class Server:
     host_header: str = ""
     is_private: bool = False
     insecure: bool = False
+    pinned_peer_cert_sha256: str = ""
+    verify_peer_cert_by_name: str = ""
     obfs: str = ""
     obfs_password: str = ""
     ports: str = ""
@@ -149,8 +151,29 @@ class Server:
             except (ValueError, TypeError):
                 expires_at = None
         lock_export = bool(data.get('lock_export', False))
+        pcs = data.get('pinned_peer_cert_sha256', '') or ''
+        pcn = data.get('verify_peer_cert_by_name', '') or ''
+        sec = data.get('security', 'none')
+        key = data.get('key', '')
+        if key and '://' in key:
+            if not pcs and ('pcs=' in key or 'pinSHA256=' in key or 'pinnedPeerCertSha256=' in key):
+                try:
+                    from .link_parser import parse_link
+                    parsed = parse_link(key)
+                    if parsed:
+                        if not pcs:
+                            pcs = parsed.pinned_peer_cert_sha256
+                        if not pcn:
+                            pcn = parsed.verify_peer_cert_by_name
+                        if sec == 'tls' and parsed.security == 'none':
+                            sec = 'none'
+                except Exception:
+                    pass
+            elif sec == 'tls' and 'security=none' in key:
+                sec = 'none'
+
         return cls(
-            key=data.get('key', ''),
+            key=key,
             name=data.get('name') or tr("server.default_name"),
             host=data.get('host', ''),
             port=port,
@@ -160,7 +183,7 @@ class Server:
             plugin_opts=data.get('plugin_opts', ''),
             protocol=protocol,
             uuid=data.get('uuid', ''),
-            security=data.get('security', 'none'),
+            security=sec,
             transport=data.get('transport', 'tcp'),
             flow=data.get('flow', ''),
             encryption=data.get('encryption', 'none'),
@@ -174,6 +197,8 @@ class Server:
             host_header=data.get('host_header', ''),
             is_private=data.get('is_private', False),
             insecure=bool(data.get('insecure', False)),
+            pinned_peer_cert_sha256=pcs,
+            verify_peer_cert_by_name=pcn,
             obfs=data.get('obfs', ''),
             obfs_password=data.get('obfs_password', ''),
             ports=data.get('ports', ''),
@@ -233,6 +258,10 @@ class Server:
             d["is_private"] = True
         if self.insecure:
             d["insecure"] = True
+        if self.pinned_peer_cert_sha256:
+            d["pinned_peer_cert_sha256"] = self.pinned_peer_cert_sha256
+        if self.verify_peer_cert_by_name:
+            d["verify_peer_cert_by_name"] = self.verify_peer_cert_by_name
         if self.obfs:
             d["obfs"] = self.obfs
         if self.obfs_password:

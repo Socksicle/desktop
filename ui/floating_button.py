@@ -189,10 +189,14 @@ class FloatingButton(QWidget):
         painter.setBrush(QBrush(bg_color))
         painter.drawRoundedRect(rect, radius - 0.5, radius - 0.5)
 
-        # Draw icon
-        cx = w / 2.0
-        cy = h / 2.0
-        if w >= 36.0:
+        # Draw icon with smooth fading and clipping
+        icon_alpha = max(0.0, min(1.0, (w - 16.0) / 24.0)) * self._anim_opacity
+        if icon_alpha > 0.01:
+            painter.save()
+            painter.setClipRect(rect)
+            painter.setOpacity(icon_alpha)
+            cx = w / 2.0
+            cy = h / 2.0
             current_icon = "close" if self._is_close_mode else self.icon_name
             pm = _icons.pixmap(current_icon, fg_hex, 22)
             if pm and not pm.isNull():
@@ -208,6 +212,7 @@ class FloatingButton(QWidget):
                 elif current_icon == "add":
                     painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
                     painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+            painter.restore()
 
 
 from utils.i18n import tr

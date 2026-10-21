@@ -33,7 +33,12 @@ def main_win(qapp, monkeypatch, tmp_path):
         ],
     }]
     win._refresh_server_list()
-    return win
+    yield win
+    try:
+        win.close()
+        win.deleteLater()
+    except Exception:
+        pass
 
 
 def _menu_texts(win):
@@ -98,6 +103,18 @@ def test_tray_disconnect_action_requests_disconnect(main_win, monkeypatch):
     win.tray_manager.disconnect_action.trigger()
 
     assert calls == [False]
+
+
+def test_tray_restore_re_adds_icon(main_win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_win.tray_manager.tray_icon, "hide",
+                        lambda: calls.append("hide"))
+    monkeypatch.setattr(main_win.tray_manager.tray_icon, "show",
+                        lambda: calls.append("show"))
+
+    main_win.tray_manager.restore()
+
+    assert calls == ["hide", "show"]
 
 
 def test_tray_connect_to_unknown_server_is_noop(main_win, monkeypatch):

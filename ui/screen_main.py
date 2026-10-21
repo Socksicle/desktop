@@ -213,6 +213,12 @@ class ScreenMain(QWidget):
         bar = self.scroll.verticalScrollBar()
         bar.setValue(max(bar.minimum(), min(target, bar.maximum())))
 
+    def apply_theme_fast(self, theme):
+        self.theme = theme
+        if hasattr(self, "hero_btn") and self.hero_btn:
+            self.hero_btn.apply_theme(theme)
+        self._apply_status_style()
+
     def apply_theme(self, theme):
         self.theme = theme
         self.scroll.apply_theme(theme)

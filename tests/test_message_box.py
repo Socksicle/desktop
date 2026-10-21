@@ -208,3 +208,49 @@ def test_message_box_dynamic_width_enlargement(qapp):
     assert long_dlg.lbl_title.wordWrap() is True
     assert long_dlg.width() > short_w
     assert long_dlg.width() >= 460
+
+
+def test_message_box_overlay_mode(qapp, theme):
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtCore import QTimer
+
+    parent = QWidget()
+    parent.resize(440, 800)
+    parent.container = QWidget(parent)
+    parent.container.setGeometry(0, 0, 440, 800)
+
+    dlg = MessageBox(parent=parent, title="Overlay Alert", text="Testing overlay mode",
+                     buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
+    assert dlg._is_overlay is True
+    assert dlg.parent() == parent.container
+    assert dlg.geometry() == parent.container.rect()
+
+    ok_btn = dlg.button(MessageBox.Ok)
+    QTimer.singleShot(20, lambda: ok_btn.click())
+    res = dlg.exec()
+    assert res == int(MessageBox.Ok)
+
+
+def test_message_box_overlay_click_outside_rejects(qapp, theme):
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    parent = QWidget()
+    parent.resize(440, 800)
+    parent.container = QWidget(parent)
+    parent.container.setGeometry(0, 0, 440, 800)
+
+    dlg = MessageBox(parent=parent, title="Overlay Outside", text="Click backdrop",
+                     buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
+    assert dlg._is_overlay is True
+    parent.show()
+    dlg.show()
+    qapp.processEvents()
+
+    # Card is centered vertically, (10, 10) is on the top backdrop
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, QPointF(10, 10),
+                        QPointF(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    dlg.mousePressEvent(press)
+    assert dlg._result_button == MessageBox.Cancel
+

@@ -15,6 +15,7 @@ from utils.engines.xray_engine import (
     _build_xray_vless_outbound,
     _build_xray_vmess_outbound,
     _build_xray_ss_outbound,
+    _build_xray_trojan_outbound,
     _build_xray_stream_settings,
 )
 
@@ -110,6 +111,25 @@ class XrayVlessConfigTest(unittest.TestCase):
         self.assertNotIn("tlsSettings", stream)
         self.assertNotIn("realitySettings", stream)
 
+    def test_vless_flow_ignored_on_ws_or_none_security(self):
+        server_ws = _FakeServer(
+            host="1.2.3.4", port=443,
+            uuid="uuid-r", flow="xtls-rprx-vision",
+            security="tls", transport="ws",
+            server_name="sni.com", fingerprint="chrome",
+        )
+        ob_ws = _build_xray_vless_outbound(server_ws)
+        self.assertNotIn("flow", ob_ws["settings"]["vnext"][0]["users"][0])
+
+        server_none = _FakeServer(
+            host="1.2.3.4", port=443,
+            uuid="uuid-r", flow="xtls-rprx-vision",
+            security="none", transport="tcp",
+            server_name="", fingerprint="",
+        )
+        ob_none = _build_xray_vless_outbound(server_none)
+        self.assertNotIn("flow", ob_none["settings"]["vnext"][0]["users"][0])
+
 
 # VMess outbound tests
 class XrayVmessConfigTest(unittest.TestCase):
@@ -183,6 +203,39 @@ class XraySSConfigTest(unittest.TestCase):
         self.assertEqual(srv["method"], "aes-256-gcm")
         self.assertEqual(srv["password"], "secret")
         self.assertEqual(ob["streamSettings"], {"network": "tcp"})
+
+
+# Trojan outbound
+class XrayTrojanConfigTest(unittest.TestCase):
+
+    def test_trojan_outbound_tls(self):
+        server = _FakeServer(
+            host="trojan.example.com", port=443,
+            password="pass", security="tls",
+            transport="tcp", server_name="sni.example.com",
+            fingerprint="chrome", path="", host_header="",
+        )
+        ob = _build_xray_trojan_outbound(server)
+        self.assertEqual(ob["protocol"], "trojan")
+        srv = ob["settings"]["servers"][0]
+        self.assertEqual(srv["address"], "trojan.example.com")
+        self.assertEqual(srv["port"], 443)
+        self.assertEqual(srv["password"], "pass")
+        self.assertEqual(ob["streamSettings"]["security"], "tls")
+        self.assertEqual(ob["streamSettings"]["tlsSettings"]["serverName"], "sni.example.com")
+
+    def test_trojan_outbound_security_none(self):
+        server = _FakeServer(
+            host="185.188.30.219", port=32087,
+            password="pass", security="none",
+            transport="tcp", server_name="",
+            fingerprint="", path="", host_header="",
+        )
+        ob = _build_xray_trojan_outbound(server)
+        self.assertEqual(ob["protocol"], "trojan")
+        self.assertNotIn("security", ob["streamSettings"])
+        self.assertNotIn("tlsSettings", ob["streamSettings"])
+        self.assertEqual(ob["streamSettings"]["network"], "tcp")
 
 
 # Full config generation
@@ -478,6 +531,143 @@ class XrayStreamSettingsTest(unittest.TestCase):
         s = _build_xray_stream_settings(server)
         self.assertEqual(s["network"], "tcp")
         self.assertNotIn("security", s)
+
+    def test_kcp_transport(self):
+        server = _FakeServer(
+            security="none", transport="kcp",
+            server_name="", fingerprint="",
+            path="", host_header="",
+            header_type="srtp", seed="kcp-seed",
+        )
+        s = _build_xray_stream_settings(server)
+        self.assertEqual(s["network"], "kcp")
+        self.assertEqual(s["kcpSettings"]["header"]["type"], "srtp")
+        self.assertEqual(s["kcpSettings"]["seed"], "kcp-seed")
+
+    def test_httpupgrade_transport(self):
+        server = _FakeServer(
+            security="none", transport="httpupgrade",
+            server_name="", fingerprint="",
+            path="/hu-path", host_header="hu.host",
+        )
+        s = _build_xray_stream_settings(server)
+        self.assertEqual(s["network"], "httpupgrade")
+        self.assertEqual(s["httpupgradeSettings"]["path"], "/hu-path")
+        self.assertEqual(s["httpupgradeSettings"]["host"], "hu.host")
+
+    def test_removed_transports_raise_error(self):
+        for bad in ("http", "h2", "h3", "quic"):
+            server = _FakeServer(
+                security="none", transport=bad,
+                server_name="", fingerprint="",
+                path="", host_header="",
+            )
+            with self.subTest(transport=bad):
+                with self.assertRaises(ValueError) as ctx:
+                    _build_xray_stream_settings(server)
+                self.assertIn("removed", str(ctx.exception).lower())
+                self.assertIn("xhttp", str(ctx.exception).lower())
+
+    def test_xhttp_mode_default_and_custom(self):
+        server_auto = _FakeServer(
+            security="none", transport="xhttp",
+            server_name="", fingerprint="",
+            path="/xh", host_header="",
+        )
+        s_auto = _build_xray_stream_settings(server_auto)
+        self.assertEqual(s_auto["xhttpSettings"]["mode"], "auto")
+
+        for mode in ("packet-up", "stream-up", "stream-one"):
+            server_mode = _FakeServer(
+                security="none", transport="xhttp",
+                server_name="", fingerprint="",
+                path="/xh", host_header="",
+                xhttp_mode=mode,
+            )
+            s_mode = _build_xray_stream_settings(server_mode)
+            self.assertEqual(s_mode["xhttpSettings"]["mode"], mode)
+
+    def test_xhttp_invalid_mode_raises(self):
+        server = _FakeServer(
+            security="none", transport="xhttp",
+            server_name="", fingerprint="",
+            path="/xh", host_header="",
+            xhttp_mode="invalid-mode",
+        )
+        with self.assertRaises(ValueError):
+            _build_xray_stream_settings(server)
+
+    def test_reality_spider_x(self):
+        server = _FakeServer(
+            security="reality", transport="tcp",
+            server_name="sni.com", fingerprint="chrome",
+            public_key="PBK", short_id="SID", spider_x="/spx",
+            path="", host_header="",
+        )
+        s = _build_xray_stream_settings(server)
+        self.assertEqual(s["realitySettings"]["spiderX"], "/spx")
+
+    def test_tls_never_emits_allow_insecure(self):
+        server = _FakeServer(
+            security="tls", transport="tcp",
+            server_name="sni.com", fingerprint="firefox",
+            insecure=True,
+            path="", host_header="",
+        )
+        s = _build_xray_stream_settings(server)
+        self.assertNotIn("allowInsecure", s.get("tlsSettings", {}))
+
+    def test_tls_pinned_peer_cert_and_name(self):
+        server = _FakeServer(
+            security="tls", transport="tcp",
+            server_name="sni.com", fingerprint="chrome",
+            pinned_peer_cert_sha256="08:1E:1A:29",
+            verify_peer_cert_by_name="peer.example.com",
+            path="", host_header="",
+        )
+        s = _build_xray_stream_settings(server)
+        tls = s.get("tlsSettings", {})
+        self.assertEqual(tls["pinnedPeerCertSha256"], "08:1E:1A:29")
+        self.assertEqual(tls["verifyPeerCertByName"], "peer.example.com")
+
+
+# DNS and unknown protocol tests
+class XrayDnsAndProtocolTest(unittest.TestCase):
+
+    def _make_server(self, proto=ProxyProtocol.VLESS):
+        return _FakeServer(
+            protocol=proto,
+            host="1.2.3.4", port=443,
+            uuid="u-1", flow="", security="none",
+            transport="tcp", server_name="", fingerprint="",
+        )
+
+    def test_dns_https(self):
+        cfg = _generate_config(self._make_server(), 1080, custom_dns="https://1.1.1.1/dns-query")
+        self.assertEqual(cfg["dns"]["servers"], ["https://1.1.1.1/dns-query", "localhost"])
+
+    def test_dns_udp_prefix_stripped(self):
+        cfg = _generate_config(self._make_server(), 1080, custom_dns="udp://8.8.8.8")
+        self.assertEqual(cfg["dns"]["servers"], ["8.8.8.8", "localhost"])
+
+    def test_dns_tcp(self):
+        cfg = _generate_config(self._make_server(), 1080, custom_dns="tcp://8.8.8.8")
+        self.assertEqual(cfg["dns"]["servers"], ["tcp://8.8.8.8", "localhost"])
+
+    def test_dns_tls_raises_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            _generate_config(self._make_server(), 1080, custom_dns="tls://1.1.1.1")
+        self.assertIn("DNS-over-TLS", str(ctx.exception))
+
+    def test_dns_default_and_none_omits_dns(self):
+        for val in (None, "", "   ", "default", "DEFAULT"):
+            cfg = _generate_config(self._make_server(), 1080, custom_dns=val)
+            self.assertNotIn("dns", cfg)
+
+    def test_unsupported_protocol_raises_value_error(self):
+        server = self._make_server(proto="unsupported_proto")
+        with self.assertRaises(ValueError):
+            _generate_config(server, 1080)
 
 
 # XrayEngine class tests

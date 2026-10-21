@@ -76,6 +76,22 @@ class HeaderBar(QWidget):
     def set_actions_visible(self, visible: bool):
         pass
 
+    def apply_theme_fast(self, theme):
+        self.theme = theme
+        text_hex = getattr(theme, "on_surface", "#E6E0E9")
+        surface_hex = getattr(theme, "surface", "#141218")
+        self.row.setStyleSheet(f"""
+            QFrame#headerRow {{
+                background-color: {surface_hex};
+                border-top-left-radius: 32px;
+                border-top-right-radius: 32px;
+                border: none;
+            }}
+        """)
+        self.title_label.setStyleSheet(
+            f"color: {text_hex}; font-size: 24px; font-weight: bold; "
+            f"background: transparent; border: none; outline: none;")
+
     def apply_theme(self, theme):
         self.theme = theme
         text_hex = getattr(theme, "on_surface", "#E6E0E9")

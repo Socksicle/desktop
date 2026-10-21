@@ -130,6 +130,8 @@ def _parse_hysteria2(raw_link, default_name=None):
         ports = _param('mport') or _param('ports') or _param('port')
         up_str = _param('up') or _param('upmbps') or _param('up_mbps')
         down_str = _param('down') or _param('downmbps') or _param('down_mbps')
+        pcs = _param('pcs') or _param('pinSHA256') or _param('pinnedPeerCertSha256') or _param('pinned_peer_cert_sha256')
+        pcn = _param('pcn') or _param('vcn') or _param('verifyPeerCertByName') or _param('verify_peer_cert_by_name')
 
         is_priv = is_private_host(host)
         if is_priv:
@@ -151,6 +153,8 @@ def _parse_hysteria2(raw_link, default_name=None):
             up_mbps=_parse_mbps(up_str),
             down_mbps=_parse_mbps(down_str),
             is_private=is_priv,
+            pinned_peer_cert_sha256=pcs,
+            verify_peer_cert_by_name=pcn,
         )
     except (ValueError, IndexError) as e:
         log.debug("Hysteria2 link parse failed: %s", e)
@@ -207,6 +211,8 @@ def _parse_vless(raw_link, default_name=None):
         enc = _param('encryption') or 'none'
         host_header = _param('host') or _param('host_header') or _param('headerType')
         path = _param('path') or _param('serviceName') or _param('servicename')
+        pcs = _param('pcs') or _param('pinSHA256') or _param('pinnedPeerCertSha256') or _param('pinned_peer_cert_sha256')
+        pcn = _param('pcn') or _param('vcn') or _param('verifyPeerCertByName') or _param('verify_peer_cert_by_name')
 
         is_priv = is_private_host(host)
         if is_priv:
@@ -230,6 +236,8 @@ def _parse_vless(raw_link, default_name=None):
             short_id=sid,
             path=path,
             host_header=host_header,
+            pinned_peer_cert_sha256=pcs,
+            verify_peer_cert_by_name=pcn,
             is_private=is_priv,
         )
     except (ValueError, IndexError) as e:
@@ -343,6 +351,10 @@ def _parse_trojan(raw_link, default_name=None):
             transport = 'tcp'
         host_header = _param('host') or _param('host_header') or _param('headerType')
         path = _param('path')
+        pcs = _param('pcs') or _param('pinSHA256') or _param('pinnedPeerCertSha256') or _param('pinned_peer_cert_sha256')
+        pcn = _param('pcn') or _param('vcn') or _param('verifyPeerCertByName') or _param('verify_peer_cert_by_name')
+        sec_param = _param('security').lower()
+        security = sec_param if sec_param else "tls"
         insecure_param = (
             _param('insecure') or _param('allowInsecure') or _param('allow_insecure') or
             _param('skip-cert-verify') or _param('skip_cert_verify') or _param('tls_insecure')
@@ -361,13 +373,15 @@ def _parse_trojan(raw_link, default_name=None):
             port=port,
             protocol=ProxyProtocol.TROJAN,
             password=password,
-            security="tls",
+            security=security,
             transport=transport,
             server_name=sni,
             fingerprint=fp,
             path=path,
             host_header=host_header,
             insecure=insecure,
+            pinned_peer_cert_sha256=pcs,
+            verify_peer_cert_by_name=pcn,
             is_private=is_priv,
         )
     except (ValueError, IndexError) as e:

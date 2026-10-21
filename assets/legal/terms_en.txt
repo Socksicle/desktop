@@ -1,90 +1,103 @@
-SOCKSICLE - TERMS OF SERVICE
+SOCKSICLE DESKTOP - TERMS OF SERVICE
 =============================================================
-Last Updated: September 2026
+Last Updated: 2026
 
 Please read these Terms of Service ("Terms") carefully before using the
-Socksicle application ("the Application", "Software").
-By installing, copying, or using the Application, you agree to be bound
-by these Terms. If you do not agree, do not install or use the Application.
+Socksicle Desktop application ("the Application", "Software").
+By launching, installing, copying, or using the Application, you agree
+to be bound by these Terms. If you do not agree to these Terms, do not
+install or use the Application.
 
 
 1. NATURE OF THE APPLICATION
 -------------------------------------------------------------
-- Socksicle is an open-source, client-side network management tool and proxy
-  client utilizing the sing-box-lx core.
-- The developers of Socksicle DO NOT provide, sell, operate, or maintain any
-  proxy servers, VPN nodes, or internet transit services.
-- The Application is solely a software client designed to process and route
-  traffic according to configurations and subscriptions supplied by the user.
+- Socksicle Desktop is an open-source desktop client for Windows and Linux
+  designed to manage network tunnels and proxy connections via supported
+  third-party proxy cores (sing-box, Xray).
+- The developers of Socksicle Desktop DO NOT provide, sell, operate, or
+  maintain proxy servers, VPN nodes, or commercial internet access services.
+- The Application is solely software that routes network packets according
+  to the protocols, configurations, and subscriptions supplied directly
+  by the user.
 
 
 2. ACCEPTABLE AND LAWFUL USE
 -------------------------------------------------------------
 - You agree to use the Application exclusively for lawful purposes and in
-  full compliance with all applicable local, national, and international laws,
-  regulations, and third-party terms.
+  strict compliance with all applicable local, national, and international
+  laws and regulations.
 - You shall NOT use the Application for:
-  a) Any activity that infringes copyright, intellectual property, or other
-     rights of any person or entity;
-  b) Distributing malware, executing cyberattacks, port scanning, or unauthorized
-     network intrusion;
-  c) Transmitting illegal, harmful, threatening, or abusive content;
-  d) Bypassing legal restrictions in violation of relevant laws and terms.
-- You assume sole responsibility for any traffic or data routed through the
-  Application on your device.
+  a) Infringing intellectual property, copyright, or any other proprietary
+     rights of any third party;
+  b) Distributing malware, orchestrating denial-of-service (DDoS) attacks,
+     port scanning, or gaining unauthorized access to computer systems;
+  c) Transmitting fraudulent, abusive, or unlawful content.
+- You assume sole and exclusive responsibility for all network traffic and
+  actions performed through the Application on your machine.
 
 
 3. THIRD-PARTY SERVERS, SUBSCRIPTIONS, AND CONTENT
 -------------------------------------------------------------
-- The Application allows you to import third-party subscription URLs and
-  connect to external servers.
-- The developers do not monitor, control, endorse, or verify any third-party
-  servers, subscriptions, or network destinations.
-- We bear no responsibility for the uptime, availability, speed, security,
-  or legality of any third-party proxy server or subscription service.
+- The Application allows importing third-party subscription URLs and
+  connecting to independent proxy nodes.
+- The developers do not endorse, inspect, manage, or monitor third-party
+  servers, providers, or visited destinations.
+- We bear no responsibility for the availability, latency, reliability,
+  security, or legal compliance of any third-party server or subscription.
 
 
-4. DISCLAIMER OF WARRANTIES
+4. SYSTEM PRIVILEGES AND TUN TUNNELING MODE
+-------------------------------------------------------------
+- Operating in TUN virtual adapter mode requires elevated system privileges
+  (Administrator rights on Windows via Wintun; root privileges or PolicyKit
+  on Linux).
+- You acknowledge that redirecting system-wide traffic impacts network
+  routing, and you assume full responsibility for granting elevated rights
+  to the underlying proxy process.
+
+
+5. DISCLAIMER OF WARRANTIES
 -------------------------------------------------------------
 THE APPLICATION IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY
-OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
-TITLE, AND NON-INFRINGEMENT.
+OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
 
 THE DEVELOPERS DO NOT WARRANT THAT:
-- THE APPLICATION WILL MEET ALL YOUR SPECIFIC REQUIREMENTS;
-- OPERATION WILL BE UNINTERRUPTED, TIMELY, SECURE, OR ERROR-FREE;
-- ANY CONNECTION OR PROXY NODE WILL REMAIN REACHABLE OR FREE FROM BLOCKING.
+- THE APPLICATION WILL OPERATE UNINTERRUPTED, SECURELY, OR ERROR-FREE;
+- ANY CONNECTION, CORE, OR PROXY NODE WILL REMAIN REACHABLE OR FREE
+  FROM BLOCKING.
 
 
-5. LIMITATION OF LIABILITY
+6. LIMITATION OF LIABILITY
 -------------------------------------------------------------
 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
 AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
 INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, REVENUE, OR PROFITS; NETWORK INTERRUPTIONS; OR REGULATORY
-PENALTIES) ARISING IN ANY WAY OUT OF THE USE OF, OR INABILITY TO USE,
-THIS APPLICATION, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+(INCLUDING LOSS OF USE, DATA, REVENUE, OR PROFITS, OR NETWORK DOWNTIME)
+ARISING OUT OF OR IN CONNECTION WITH THE USE OF OR INABILITY TO USE THE
+APPLICATION.
 
 
-6. INTELLECTUAL PROPERTY AND OPEN-SOURCE LICENSES
+7. INTELLECTUAL PROPERTY AND OPEN-SOURCE LICENSES
 -------------------------------------------------------------
-- Socksicle is open-source software distributed under the terms of the MIT License.
-- Third-party components, including sing-box-lx (GPLv3) and AndroidX libraries
-  (Apache 2.0), remain the property of their respective authors and are governed
-  by their respective licenses as detailed in THIRD_PARTY_LICENSES_EN.txt.
+- The source code of Socksicle Desktop is licensed under the MIT License.
+- Third-party components and proxy engines, including sing-box (GPLv3),
+  Xray-core (MPL-2.0), PySide6 (LGPLv3), Wintun (MIT/BSD), and associated
+  libraries, remain the intellectual property of their respective copyright
+  holders and are governed by their respective licenses (refer to the
+  "Third-party licenses" section).
 
 
-7. MODIFICATIONS TO TERMS
+8. MODIFICATIONS TO TERMS
 -------------------------------------------------------------
-We reserve the right to revise or update these Terms at any time without prior
-notice. Continued use of the Application following any updates constitutes
-your acceptance of the modified Terms.
+We reserve the right to revise these Terms at any time. The current version
+will always be published in the official project repository with its revision
+date. Continued use of the Application after updates constitutes your
+agreement to the modified Terms.
 
 
-8. CONTACT INFORMATION
+9. CONTACT INFORMATION
 -------------------------------------------------------------
-For inquiries regarding these Terms of Service, contact the project maintainers:
-- GitHub: https://github.com/socksicle/Socksicle
+For any inquiries regarding these Terms of Service, contact the maintainers:
+- GitHub: https://github.com/socksicle/desktop
 - Telegram: https://t.me/iwtsyddd

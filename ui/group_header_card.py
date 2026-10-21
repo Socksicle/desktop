@@ -1,12 +1,43 @@
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget
-from PySide6.QtCore import Qt, QPointF, QTimer, Signal
-from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal
+from PySide6.QtGui import QIcon, QPainter, QPixmap, QColor, QBrush, QPen
 
 from utils.icons import pixmap, set_button_icon
 
 from .chevron_view import ChevronView
 from .elided_label import ElidedLabel
 from utils.i18n import tr
+
+_SPIN_FRAME_COUNT = 36
+_SPIN_INTERVAL_MS = 33
+
+
+class _SmoothIconTile(QFrame):
+    """Antialiased rounded squircle container for icon glyphs.
+
+    Replaces QSS border-radius to eliminate aliasing and jagged edges on curved borders.
+    """
+
+    def __init__(self, radius: float = 14.0, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(36, 36)
+        self._radius = radius
+        self._bg_color = QColor(255, 255, 255, 12)
+        self._border_color = QColor(255, 255, 255, 38)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def set_colors(self, bg: str | QColor, border: str | QColor):
+        self._bg_color = QColor(bg) if isinstance(bg, str) else bg
+        self._border_color = QColor(border) if isinstance(border, str) else border
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        p.setPen(QPen(self._border_color, 1.0))
+        p.setBrush(QBrush(self._bg_color))
+        p.drawRoundedRect(rect, self._radius, self._radius)
 
 
 class GroupHeaderCard(QFrame):
@@ -34,9 +65,10 @@ class GroupHeaderCard(QFrame):
         self._refreshing = False
         self._refresh_base_subtitle = ""
         self._refresh_pixmap: QPixmap | None = None
-        self._spin_angle = 0.0
+        self._spin_frames: list[QIcon] = []
+        self._spin_frame_index = 0
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(16)
+        self._spin_timer.setInterval(_SPIN_INTERVAL_MS)
         self._spin_timer.timeout.connect(self._spin_tick)
 
         outer = QVBoxLayout(self)
@@ -58,8 +90,7 @@ class GroupHeaderCard(QFrame):
         chevron_gap.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addWidget(chevron_gap)
 
-        self.icon_tile = QFrame()
-        self.icon_tile.setFixedSize(36, 36)
+        self.icon_tile = _SmoothIconTile(radius=14.0)
         tile_layout = QVBoxLayout(self.icon_tile)
         tile_layout.setContentsMargins(0, 0, 0, 0)
         self.icon_label = QLabel(icon or "🌐")
@@ -130,29 +161,53 @@ class GroupHeaderCard(QFrame):
             if not self._refreshing:
                 self._refresh_base_subtitle = self.sub_label.text()
             self._refreshing = True
-            if not self._spin_timer.isActive():
-                self._spin_angle = 0.0
-                self._spin_timer.start()
+            self._update_spin_timer()
             self.set_subtitle(tr("group.refreshing"))
         elif self._refreshing:
             self._refreshing = False
             self._spin_timer.stop()
-            self._spin_angle = 0.0
+            self._spin_frame_index = 0
             if self._refresh_pixmap is not None and not self._refresh_pixmap.isNull():
                 self.btn_refresh.setIcon(QIcon(self._refresh_pixmap))
             self.set_subtitle(self._refresh_base_subtitle)
 
-    def _spin_tick(self):
-        icon = self._rotated_refresh_icon(self._spin_angle)
-        self._spin_angle = (self._spin_angle + 4.0) % 360.0
-        if icon is not None:
-            self.btn_refresh.setIcon(icon)
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_spin_timer()
 
-    def _rotated_refresh_icon(self, angle: float) -> QIcon | None:
-        """Render the refresh glyph rotated in place (no bounding-box growth)."""
+    def hideEvent(self, event):
+        self._spin_timer.stop()
+        super().hideEvent(event)
+
+    def _update_spin_timer(self):
+        if self._refreshing and self.isVisible() and self._ensure_spin_frames():
+            if not self._spin_timer.isActive():
+                self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
+
+    def _ensure_spin_frames(self) -> bool:
+        if self._spin_frames:
+            return True
         base = self._refresh_pixmap
         if base is None or base.isNull():
-            return None
+            return False
+        step = 360.0 / _SPIN_FRAME_COUNT
+        self._spin_frames = [
+            QIcon(self._rotated_refresh_pixmap(base, i * step))
+            for i in range(_SPIN_FRAME_COUNT)
+        ]
+        return True
+
+    def _spin_tick(self):
+        if not self.isVisible() or not self._ensure_spin_frames():
+            self._spin_timer.stop()
+            return
+        self._spin_frame_index = (self._spin_frame_index + 1) % len(self._spin_frames)
+        self.btn_refresh.setIcon(self._spin_frames[self._spin_frame_index])
+
+    def _rotated_refresh_pixmap(self, base: QPixmap, angle: float) -> QPixmap:
+        """Render the refresh glyph rotated in place (no bounding-box growth)."""
         pm = QPixmap(base.size())
         pm.setDevicePixelRatio(base.devicePixelRatio())
         pm.fill(Qt.transparent)
@@ -166,7 +221,7 @@ class GroupHeaderCard(QFrame):
             painter.drawPixmap(QPointF(-w / 2.0, -h / 2.0), base)
         finally:
             painter.end()
-        return QIcon(pm)
+        return pm
 
     def set_expanded(self, expanded: bool):
         """Chevron points down when expanded, right when collapsed."""
@@ -209,11 +264,7 @@ class GroupHeaderCard(QFrame):
             }}
         """)
         self.chevron.set_color(muted_hex)
-        self.icon_tile.setStyleSheet(f"""
-            background-color: {surface_high};
-            border-radius: 14px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-        """)
+        self.icon_tile.set_colors(surface_high, QColor(255, 255, 255, 38))
         self.name_label.setStyleSheet(
             f"color: {text_hex}; font-size: 14.5px; font-weight: bold; background: transparent;")
         self.sub_label.setStyleSheet(
@@ -246,3 +297,7 @@ class GroupHeaderCard(QFrame):
             set_button_icon(btn, btn.property("iconName"),
                             muted_hex, 18, btn.property("iconFallback") or "")
         self._refresh_pixmap = pixmap("refresh", muted_hex, 18)
+        self._spin_frames = []
+        self._spin_frame_index = 0
+        if self._refreshing:
+            self._update_spin_timer()

@@ -1,7 +1,7 @@
 """Tests for ServerListPanel and AnimatedRadioButton optimizations."""
 import pytest
 from unittest.mock import MagicMock
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 
 from ui.server_list_panel import ServerListPanel
 from ui.server_item import ServerItem, AnimatedRadioButton
@@ -65,20 +65,23 @@ def test_ping_threshold_colors():
     theme = M3Theme()
     item = ServerItem("Test", Server(name="Test", host="1.1.1.1", port=443), theme)
 
-    # Good (< 150ms) -> success color
+    # Good (< 150ms) -> accent color
     item.set_ping(120.0)
     assert item.ping_label.text() == "120ms"
-    assert theme.success in item.ping_label.styleSheet()
+    assert theme.primary in item.ping_label.styleSheet()
+    assert item.ping_bars._active_color.name() == QColor(theme.primary).name()
 
     # Medium (150-300ms) -> warning color
     item.set_ping(200.0)
     assert item.ping_label.text() == "200ms"
     assert theme.warning in item.ping_label.styleSheet()
+    assert item.ping_bars._active_color.name() == QColor(theme.warning).name()
 
     # Poor (>= 300ms) -> error color
     item.set_ping(350.0)
     assert item.ping_label.text() == "350ms"
     assert theme.error in item.ping_label.styleSheet()
+    assert item.ping_bars._active_color.name() == QColor(theme.error).name()
 
     # Failed (< 0) -> "н/в" and error color
     item.set_ping(-1.0)
@@ -119,6 +122,25 @@ def test_server_list_panel_refresh_updates_enabled():
     assert len(panel._server_items) == 1
 
 
+def test_refresh_stops_stale_ping_and_deletes_row_once():
+    theme = M3Theme()
+    panel = ServerListPanel(theme)
+    keep = Server(name="Keep", host="1.1.1.1", port=443)
+    gone = Server(name="Gone", host="2.2.2.2", port=443)
+    panel.refresh([keep, gone])
+
+    stale = panel._server_items[1]
+    stale.start_ping_animation()
+    delete_calls = []
+    stale.deleteLater = lambda: delete_calls.append(1)
+
+    panel.refresh([keep])
+
+    assert stale.is_ping_animating() is False
+    assert delete_calls == [1]
+    assert all(it is not stale for it in panel._server_items)
+
+
 def test_server_list_panel_empty_state_lifecycle():
     from utils.i18n import tr
     theme = M3Theme()
@@ -155,3 +177,41 @@ def test_server_list_panel_empty_state_lifecycle():
     panel.refresh([], groups=[group])
     assert panel._empty_widget.isVisible() is False
     assert len(panel._group_cards) == 1
+
+
+def test_server_list_panel_bottom_spacer_reuse_and_cleanup():
+    """Verify that repeated refreshes reuse the bottom spacer and do not accumulate spacers."""
+    theme = M3Theme()
+    panel = ServerListPanel(theme)
+    srv1 = Server(name="S1", host="1.1.1.1", port=443)
+    srv2 = Server(name="S2", host="2.2.2.2", port=443)
+
+    initial_spacer = panel._bottom_spacer
+
+    # Refresh several times with different data
+    for servers in [[srv1], [srv1, srv2], [srv2], []]:
+        panel.refresh(servers)
+        layout = panel.layout()
+        # Find all spacer items in the layout
+        spacers = [layout.itemAt(i).spacerItem() for i in range(layout.count()) if layout.itemAt(i).spacerItem() is not None]
+        assert len(spacers) == 1
+        assert spacers[0] is initial_spacer
+        assert layout.itemAt(layout.count() - 1).spacerItem() is initial_spacer
+
+
+def test_server_list_panel_cleans_foreign_spacers():
+    """Any orphaned spacer in the layout is cleanly removed and not retained."""
+    theme = M3Theme()
+    panel = ServerListPanel(theme)
+    srv = Server(name="S1", host="1.1.1.1", port=443)
+    panel.refresh([srv])
+
+    # Inject a foreign stretch spacer directly into the layout
+    panel.layout().addStretch()
+    assert panel.layout().count() == 3
+
+    # Refresh should clean out the foreign spacer and keep only the persistent one
+    panel.refresh([srv])
+    assert panel.layout().count() == 2
+    assert panel.layout().itemAt(1).spacerItem() is panel._bottom_spacer
+

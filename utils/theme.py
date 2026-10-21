@@ -1,18 +1,24 @@
-"""Material You (Material Design 3 / SPEC_2025) Theme Engine for Socksicle.
+"""Material You (Material Design 3) Theme Engine for Socksicle.
 
 Provides dynamic tonal color generation, native system accent color
 extraction (Windows DWM, Linux XDG Desktop Portal), and curated
 Material 3 preset palettes.
 
-The tonal engine follows the M3 SPEC_2025 recipe with tonal-spot palettes:
-seed -> palettes faithful to the seed hue -> dark-scheme tone mapping.
-No playful hue rotations: every role stays in the seed's own hue family.
-Tones are CIELAB L* (which is exactly what an M3 "tone" is); hue/chroma
-live in CIELAB LCH as a close, dependency-free stand-in for CAM16-UCS.
+Supports the classic M3 SPEC_2021 and the M3 Expressive SPEC_2025
+tonal-spot recipes. Tones are CIELAB L* (which is exactly what an M3
+"tone" is); hue/chroma live in CIELAB LCH as a close, dependency-free
+stand-in for CAM16-UCS.
 """
+import json
 import logging
+import math
+import os
+import re
+import shutil
+import subprocess
 import sys
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QImage
 
 log = logging.getLogger("theme")
 
@@ -131,9 +137,41 @@ _TONAL_SPOT_NEUTRAL_VARIANT_CHROMA = 8.0
 _TONAL_SPOT_ERROR_HUE = 25.0
 _TONAL_SPOT_ERROR_CHROMA = 84.0
 
+_STATUS_WARNING_HUE = 85.0
+_STATUS_HUE_HARMONIZE_DEG = 15.0
+
 
 def _sanitize_degrees(degrees: float) -> float:
     return degrees % 360.0
+
+
+def _harmonize_hue(hue: float, target_hue: float, max_shift: float) -> float:
+    """Rotate ``hue`` toward ``target_hue`` by at most ``max_shift`` degrees."""
+    delta = _sanitize_degrees(target_hue - hue + 180.0) - 180.0
+    return _sanitize_degrees(hue + max(-max_shift, min(max_shift, delta)))
+
+
+SPEC_2021 = "2021"
+SPEC_2025 = "2025"
+_THEME_SPECS = (SPEC_2021, SPEC_2025)
+
+
+def _normalize_spec(spec) -> str:
+    """Return a supported Material color spec, defaulting to SPEC_2021."""
+    return spec if spec in _THEME_SPECS else SPEC_2021
+
+
+def _piecewise_value(value: float, breakpoints: list[float], values: list[float]) -> float:
+    """Return the entry whose breakpoint interval contains ``value``."""
+    for lo, hi, mapped in zip(breakpoints, breakpoints[1:], values):
+        if lo <= value < hi:
+            return mapped
+    return value
+
+
+def _rotated_hue(value: float, breakpoints: list[float], rotations: list[float]) -> float:
+    """Apply a Material piecewise hue rotation to ``value``."""
+    return _sanitize_degrees(value + _piecewise_value(value, breakpoints, rotations))
 
 
 def _coerce_seed(seed) -> QColor | None:
@@ -240,12 +278,317 @@ def _palette_tone(hue: float, chroma: float, tone: float) -> "QColor":
     return _QColor(*gray)
 
 
+def _get_preferred_scheme_type() -> str | None:
+    """Check if desktop configuration specifies a preferred Material 3 scheme variant."""
+    for conf_path in [
+        os.path.expanduser("~/.config/illogical-impulse/config.json"),
+    ]:
+        if os.path.isfile(conf_path):
+            try:
+                with open(conf_path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                st = d.get("appearance", {}).get("palette", {}).get("type")
+                if st and isinstance(st, str):
+                    return st
+            except Exception:
+                pass
+    return None
+
+
+def _calculate_image_colorfulness(small: QImage) -> float:
+    """Calculate Hasler & Süsstrunk colorfulness metric on a scaled image."""
+    n = small.width() * small.height()
+    if n == 0:
+        return 0.0
+    rg_list, yb_list = [], []
+    for y in range(small.height()):
+        for x in range(small.width()):
+            c = QColor(small.pixel(x, y))
+            r, g, b = c.red(), c.green(), c.blue()
+            rg_list.append(abs(r - g))
+            yb_list.append(abs(0.5 * (r + g) - b))
+    mean_rg = sum(rg_list) / n
+    mean_yb = sum(yb_list) / n
+    std_rg = math.sqrt(sum((v - mean_rg) ** 2 for v in rg_list) / n)
+    std_yb = math.sqrt(sum((v - mean_yb) ** 2 for v in yb_list) / n)
+    return math.sqrt(std_rg ** 2 + std_yb ** 2) + (0.3 * math.sqrt(mean_rg ** 2 + mean_yb ** 2))
+
+
+def _extract_dominant_color_from_image(image_path: str) -> tuple[QColor | None, str]:
+    """Extract dominant seed color and scheme type using 5-bit quantization and M3 scoring."""
+    try:
+        img = QImage(image_path)
+        if img.isNull():
+            return None, "tonal-spot"
+        small = img.scaled(64, 64, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+        colorfulness = _calculate_image_colorfulness(small)
+
+        # 5-bit RGB quantization (clusters colors in 3D color space)
+        bins = {}
+        for y in range(small.height()):
+            for x in range(small.width()):
+                c = QColor(small.pixel(x, y))
+                r, g, b = c.red(), c.green(), c.blue()
+                k = (r >> 3, g >> 3, b >> 3)
+                if k not in bins:
+                    bins[k] = [0, 0, 0, 0]
+                entry = bins[k]
+                entry[0] += 1
+                entry[1] += r
+                entry[2] += g
+                entry[3] += b
+
+        candidates, total_count = [], 0
+        for cnt, r_sum, g_sum, b_sum in bins.values():
+            qc = QColor(r_sum // cnt, g_sum // cnt, b_sum // cnt)
+            tone, chroma, hue = _rgb_to_lch(qc)
+            # Filter noise: too dark, too light, or pure gray
+            if tone < 20 or tone > 92 or chroma < 8.0:
+                continue
+            # Google Dislike filter: muddy yellow-green olive
+            if 88.0 <= hue <= 115.0 and chroma > 16.0 and tone < 65.0:
+                continue
+            candidates.append((qc, tone, chroma, hue, cnt))
+            total_count += cnt
+
+        if not candidates:
+            return None, "tonal-spot"
+
+        scored = []
+        for qc, tone, chroma, hue, cnt in candidates:
+            prop = cnt / total_count if total_count else 0
+            prop_score = prop * 70.0
+            chroma_weight = 0.1 if chroma < 48.0 else 0.3
+            chroma_score = (chroma - 48.0) * chroma_weight
+            score = prop_score + chroma_score
+            scored.append((score, qc, hue))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best_color = scored[0][1]
+
+        # Scheme type selection matching Material You / Quickshell scheme_for_image
+        preferred_scheme = _get_preferred_scheme_type()
+        if preferred_scheme == "scheme-neutral" or colorfulness < 40.0:
+            scheme_type = "neutral"
+        else:
+            scheme_type = "tonal-spot"
+
+        return best_color, scheme_type
+    except Exception as e:
+        log.debug("Image dominant color extraction failed: %s", e)
+        return None, "tonal-spot"
+
+
+def _detect_linux_wallpaper_path() -> str | None:
+    """Detect active desktop wallpaper image path across Hyprland, Sway, tiling WMs and DEs."""
+    # 1. Hyprpaper CLI
+    if shutil.which("hyprctl"):
+        try:
+            res = subprocess.run(["hyprctl", "hyprpaper", "listactive"], capture_output=True, text=True, timeout=0.3)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if "=" in line:
+                        p = line.split("=", 1)[1].strip()
+                        if p and os.path.isfile(p):
+                            return p
+        except Exception:
+            pass
+
+    # 2. SWWW CLI
+    if shutil.which("swww"):
+        try:
+            res = subprocess.run(["swww", "query"], capture_output=True, text=True, timeout=0.3)
+            if res.returncode == 0:
+                m = re.search(r"image:\s*([^\r\n]+)", res.stdout)
+                if m:
+                    p = m.group(1).strip()
+                    if p and os.path.isfile(p):
+                        return p
+        except Exception:
+            pass
+
+    # 3. GNOME / Cinnamon / MATE / XFCE desktop settings
+    if shutil.which("gsettings"):
+        for schema, key in [
+            ("org.gnome.desktop.background", "picture-uri-dark"),
+            ("org.gnome.desktop.background", "picture-uri"),
+            ("org.cinnamon.desktop.background", "picture-uri"),
+            ("org.mate.background", "picture-filename"),
+        ]:
+            try:
+                res = subprocess.run(["gsettings", "get", schema, key], capture_output=True, text=True, timeout=0.3)
+                if res.returncode == 0 and res.stdout.strip():
+                    raw = res.stdout.strip().strip("'\"")
+                    if raw.startswith("file://"):
+                        raw = raw[7:]
+                    if raw and os.path.isfile(raw):
+                        return raw
+            except Exception:
+                pass
+
+    if shutil.which("xfconf-query"):
+        try:
+            res = subprocess.run(
+                ["xfconf-query", "-c", "xfce4-desktop", "-p", "/backdrop/screen0/monitor0/workspace0/last-image"],
+                capture_output=True, text=True, timeout=0.3
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                p = res.stdout.strip()
+                if p and os.path.isfile(p):
+                    return p
+        except Exception:
+            pass
+
+    # 4. Standard tiling and desktop configs (Hyprland, Waypaper, Feh, Pywal, Nitrogen, Sway, KDE)
+    config_candidates = [
+        os.path.expanduser("~/.config/hypr/hyprlock/colors.conf"),
+        os.path.expanduser("~/.config/hypr/hyprlock.conf"),
+        os.path.expanduser("~/.config/hypr/hyprpaper.conf"),
+        os.path.expanduser("~/.config/illogical-impulse/config.json"),
+        os.path.expanduser("~/.config/waypaper/config.ini"),
+        os.path.expanduser("~/.cache/wal/wal"),
+        os.path.expanduser("~/.fehbg"),
+        os.path.expanduser("~/.config/nitrogen/bg-saved.cfg"),
+        os.path.expanduser("~/.config/sway/config"),
+        os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc"),
+    ]
+    for conf in config_candidates:
+        if not os.path.isfile(conf):
+            continue
+        try:
+            with open(conf, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+
+            if conf.endswith(".json"):
+                try:
+                    jd = json.loads(content)
+                    wp = jd.get("wallpaper") or jd.get("wallpaper_path") or jd.get("background")
+                    if wp and isinstance(wp, str) and os.path.isfile(os.path.expanduser(wp)):
+                        return os.path.expanduser(wp)
+                except Exception:
+                    pass
+
+            # Check single path file (e.g. ~/.cache/wal/wal)
+            first_line = content.splitlines()[0].strip() if content.splitlines() else ""
+            if first_line and not first_line.startswith(("#", "[", "$")) and os.path.isfile(os.path.expanduser(first_line)):
+                return os.path.expanduser(first_line)
+
+            # Feh execution script
+            if conf.endswith(".fehbg"):
+                m_feh = re.search(r"'(.*?)'|\"(.*?)\"", content)
+                if m_feh:
+                    p = os.path.expanduser((m_feh.group(1) or m_feh.group(2) or "").strip())
+                    if p and os.path.isfile(p):
+                        return p
+
+            # Key-value match (supports spaces in file paths!)
+            m = re.search(
+                r'(?:\$background_image|path|wallpaper|file|Image)\s*=\s*(?:[a-zA-Z0-9_\-]+,\s*)?([^\r\n"\'#;]+)',
+                content
+            )
+            if m:
+                p = os.path.expanduser(m.group(1).strip())
+                if p.startswith("file://"):
+                    p = p[7:]
+                if p and os.path.isfile(p):
+                    return p
+        except Exception:
+            pass
+
+    return None
+
+
+_WALLPAPER_ACCENT_CACHE: dict[str, object] = {
+    "path": None,
+    "mtime": 0.0,
+    "spec": None,
+    "result": None,
+}
+
+
+def get_linux_wallpaper_accent_color(spec: str = SPEC_2021) -> tuple[QColor | None, str, dict | None]:
+    """Extract vibrant accent color and scheme variant from active desktop wallpaper on Linux.
+
+    Returns:
+        tuple (accent_color, scheme_type, precalculated_tokens_or_None)
+    """
+    wp_path = _detect_linux_wallpaper_path()
+    if not wp_path:
+        return None, "tonal-spot", None
+
+    try:
+        mtime = os.path.getmtime(wp_path)
+    except OSError:
+        mtime = 0.0
+
+    if (
+        _WALLPAPER_ACCENT_CACHE["path"] == wp_path
+        and _WALLPAPER_ACCENT_CACHE["mtime"] == mtime
+        and _WALLPAPER_ACCENT_CACHE["spec"] == spec
+        and _WALLPAPER_ACCENT_CACHE["result"] is not None
+    ):
+        return _WALLPAPER_ACCENT_CACHE["result"]  # type: ignore[return-value]
+
+    result: tuple[QColor | None, str, dict | None] = (None, "tonal-spot", None)
+
+    # Check if matugen CLI is available for native system palette alignment.
+    # matugen 4.x cannot emit the 2025 spec, so 2025 uses the in-app engine.
+    matugen_bin = shutil.which("matugen") or ("/usr/sbin/matugen" if os.path.isfile("/usr/sbin/matugen") else None)
+    if matugen_bin and spec != SPEC_2025:
+        try:
+            preferred = _get_preferred_scheme_type()
+            cmd = [matugen_bin, "image", wp_path, "--dry-run", "-j", "hex", "--source-color-index", "0", "--mode", "dark"]
+            if preferred:
+                cmd.extend(["--type", preferred])
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=1.0)
+            if res.returncode == 0:
+                d = json.loads(res.stdout)
+                c_dict = d.get("colors", {})
+                tokens = {}
+                for k in [
+                    "primary", "on_primary", "primary_container", "on_primary_container",
+                    "secondary", "on_secondary", "secondary_container", "on_secondary_container",
+                    "tertiary", "on_tertiary", "tertiary_container", "on_tertiary_container",
+                    "surface", "surface_dim", "surface_bright", "surface_container_lowest",
+                    "surface_container_low", "surface_container", "surface_container_high",
+                    "surface_container_highest", "surface_variant", "on_surface", "on_surface_variant",
+                    "outline", "outline_variant", "error", "on_error", "error_container", "on_error_container"
+                ]:
+                    role_info = c_dict.get(k, {})
+                    if isinstance(role_info, dict):
+                        hex_val = role_info.get("dark", {}).get("color") or role_info.get("default", {}).get("color")
+                    elif isinstance(role_info, str):
+                        hex_val = role_info
+                    else:
+                        hex_val = None
+                    if hex_val and isinstance(hex_val, str) and hex_val.startswith("#"):
+                        tokens[k] = hex_val
+                if "primary" in tokens and "surface" in tokens:
+                    result = (QColor(tokens["primary"]), preferred or "neutral", tokens)
+        except Exception as e:
+            log.debug("Matugen dry-run extraction failed: %s", e)
+
+    if result[0] is None:
+        # Pure in-app Python extraction (independent of external tools)
+        dom, scheme = _extract_dominant_color_from_image(wp_path)
+        if dom and dom.isValid():
+            result = (dom, scheme, None)
+
+    _WALLPAPER_ACCENT_CACHE["path"] = wp_path
+    _WALLPAPER_ACCENT_CACHE["mtime"] = mtime
+    _WALLPAPER_ACCENT_CACHE["spec"] = spec
+    _WALLPAPER_ACCENT_CACHE["result"] = result
+    return result
+
+
 class M3Theme:
     """Material 3 (Material You) Theme Manager."""
 
-    def __init__(self, preset_key: str = "dynamic", seed=None):
+    def __init__(self, preset_key: str = "dynamic", seed=None, spec: str = SPEC_2021):
         self.preset_key = preset_key
         self.is_amoled = preset_key == "amoled"
+        self.spec = _normalize_spec(spec)
         self._init_defaults()
         self.apply_theme(preset_key, seed=seed)
 
@@ -293,6 +636,27 @@ class M3Theme:
         self.on_warning = "#422C00"
         self.warning_container = "#5F4100"
 
+    def get_swatch_quadrant_colors(self) -> list[str]:
+        """Return [top_right, top_left, bottom_left, bottom_right] colors for dynamic theme swatch circle."""
+        c_pri = getattr(self, "primary", "#D0BCFF")
+        c_sec = getattr(self, "secondary", "#CCC2DC")
+        c_ter = getattr(self, "tertiary", "#EFB8C8")
+        c_con = getattr(self, "primary_container", getattr(self, "secondary_container", "#4A4458"))
+
+        def _rgb_dist(c1: str, c2: str) -> float:
+            q1, q2 = QColor(c1), QColor(c2)
+            if not q1.isValid() or not q2.isValid():
+                return 999.0
+            return math.hypot(q1.red() - q2.red(), q1.green() - q2.green(), q1.blue() - q2.blue())
+
+        # If primary, secondary, and tertiary are nearly identical (e.g. scheme-neutral / monochrome),
+        # distribute across distinct tonal roles so all 4 quadrants are clearly visually distinguishable.
+        if _rgb_dist(c_pri, c_sec) < 20.0 and _rgb_dist(c_pri, c_ter) < 20.0:
+            c_sec = getattr(self, "outline", getattr(self, "on_surface_variant", "#93908c"))
+            c_ter = getattr(self, "surface_container_highest", getattr(self, "surface_bright", "#363532"))
+
+        return [c_sec, c_pri, c_ter, c_con]
+
     def _get_linux_portal_accent_color(self, bus=None) -> QColor | None:
         """Read native Linux Accent Color from XDG Desktop Portal."""
         return get_portal_accent_color(bus=bus)
@@ -300,6 +664,10 @@ class M3Theme:
     def _get_linux_portal_color_scheme(self, bus=None) -> int | None:
         """Read native Linux Color Scheme preference from XDG Desktop Portal."""
         return get_portal_color_scheme(bus=bus)
+
+    def _get_linux_wallpaper_accent_color(self) -> tuple[QColor | None, str, dict | None]:
+        """Read native Linux wallpaper accent color and variant from the desktop."""
+        return get_linux_wallpaper_accent_color(spec=self.spec)
 
     def apply_theme(self, preset_key: str = "dynamic", seed=None):
         """Apply a preset or derive a seed from the system accent color."""
@@ -324,10 +692,41 @@ class M3Theme:
                 return
 
         if sys.platform.startswith("linux"):
-            accent = self._get_linux_portal_accent_color()
-            if accent:
-                log.info("Applying dynamic theme from Linux XDG portal accent color: %s", accent.name())
-                self.generate_palette(accent)
+            accent_res = self._get_linux_wallpaper_accent_color()
+            if accent_res:
+                tokens = None
+                scheme_type = "tonal-spot"
+                if isinstance(accent_res, tuple):
+                    if len(accent_res) == 3:
+                        accent, scheme_type, tokens = accent_res
+                    elif len(accent_res) == 2:
+                        accent, scheme_type = accent_res
+                    else:
+                        accent = accent_res[0]
+                else:
+                    accent = accent_res
+
+                if tokens:
+                    log.info("Applying dynamic theme from Linux desktop tokens")
+                    for k, v in tokens.items():
+                        setattr(self, k, v)
+                    return
+
+                if accent and hasattr(accent, "isValid") and accent.isValid():
+                    # The low-colorfulness neutral fallback is a 2025 behavior;
+                    # SPEC_2021 keeps the seed hue vivid unless the desktop
+                    # explicitly asks for the neutral scheme.
+                    if (self.spec == SPEC_2021 and scheme_type == "neutral"
+                            and _get_preferred_scheme_type() != "scheme-neutral"):
+                        scheme_type = "tonal-spot"
+                    log.info("Applying dynamic theme from Linux wallpaper: %s (scheme: %s)", accent.name(), scheme_type)
+                    self.generate_palette(accent, scheme_type=scheme_type)
+                    return
+
+            portal_accent = self._get_linux_portal_accent_color()
+            if portal_accent:
+                log.info("Applying dynamic theme from Linux XDG portal accent color: %s", portal_accent.name())
+                self.generate_palette(portal_accent)
                 return
 
         self.generate_palette(PRESET_SEEDS["lavender"])
@@ -365,24 +764,97 @@ class M3Theme:
                 log.debug("Windows ColorizationColor read failed: %s", e2)
         return None
 
-    def generate_palette(self, seed: QColor):
-        """Generate a Material 3 (SPEC_2025, tonal-spot) dark palette.
+    def generate_palette(self, seed: QColor, scheme_type: str = "tonal-spot"):
+        """Generate a dark Material 3 palette for the selected spec.
 
-        Every palette keeps the seed hue, so the whole theme stays in one
-        hue family with rich, non-washed-out chroma.
+        SPEC_2021 keeps the seed hue more saturated; SPEC_2025 uses the
+        M3 Expressive palette recipe with rotated tertiary/error hues.
         """
-        _, _, seed_hue = _rgb_to_lch(seed)
-        primary = (seed_hue, _TONAL_SPOT_PRIMARY_CHROMA)
-        secondary = (seed_hue, _TONAL_SPOT_SECONDARY_CHROMA)
-        tertiary = (
-            _sanitize_degrees(seed_hue + _TONAL_SPOT_TERTIARY_HUE_SHIFT),
-            _TONAL_SPOT_TERTIARY_CHROMA,
+        _, seed_chroma, seed_hue = _rgb_to_lch(seed)
+        is_2025 = self.spec == SPEC_2025
+        is_blue = 250.0 <= seed_hue < 270.0
+
+        if scheme_type == "neutral":
+            if is_2025:
+                primary_chroma = 12.0 if is_blue else 8.0
+                secondary_chroma = 6.0 if is_blue else 4.0
+                tertiary_hue = _rotated_hue(
+                    seed_hue,
+                    [0.0, 38.0, 105.0, 161.0, 204.0, 278.0, 333.0, 360.0],
+                    [-32.0, 26.0, 10.0, -39.0, 24.0, -15.0, -32.0],
+                )
+                tertiary_chroma = 20.0
+                neutral_chroma = 1.4
+                neutral_variant_chroma = 3.1
+                error_chroma = 50.0
+            else:
+                primary_chroma = 12.0
+                secondary_chroma = 8.0
+                tertiary_hue = _sanitize_degrees(seed_hue + _TONAL_SPOT_TERTIARY_HUE_SHIFT)
+                tertiary_chroma = 16.0
+                neutral_chroma = 2.0
+                neutral_variant_chroma = 2.0
+                error_chroma = _TONAL_SPOT_ERROR_CHROMA
+        else:
+            if is_2025:
+                primary_chroma = 26.0
+                secondary_chroma = 16.0
+                tertiary_hue = _rotated_hue(
+                    seed_hue,
+                    [0.0, 20.0, 71.0, 161.0, 333.0, 360.0],
+                    [-40.0, 48.0, -32.0, 40.0, -32.0],
+                )
+                tertiary_chroma = 28.0
+                neutral_chroma = 5.0
+                neutral_variant_chroma = 8.5
+                error_chroma = 60.0
+            else:
+                primary_chroma = _TONAL_SPOT_PRIMARY_CHROMA
+                secondary_chroma = _TONAL_SPOT_SECONDARY_CHROMA
+                tertiary_hue = _sanitize_degrees(seed_hue + _TONAL_SPOT_TERTIARY_HUE_SHIFT)
+                tertiary_chroma = _TONAL_SPOT_TERTIARY_CHROMA
+                neutral_chroma = _TONAL_SPOT_NEUTRAL_CHROMA
+                neutral_variant_chroma = _TONAL_SPOT_NEUTRAL_VARIANT_CHROMA
+                error_chroma = _TONAL_SPOT_ERROR_CHROMA
+
+        error_hue = (
+            _piecewise_value(
+                seed_hue,
+                [0.0, 3.0, 13.0, 23.0, 33.0, 43.0, 153.0, 273.0, 360.0],
+                [12.0, 22.0, 32.0, 12.0, 22.0, 32.0, 22.0, 12.0],
+            )
+            if is_2025
+            else _TONAL_SPOT_ERROR_HUE
         )
-        neutral = (seed_hue, _TONAL_SPOT_NEUTRAL_CHROMA)
-        neutral_variant = (seed_hue, _TONAL_SPOT_NEUTRAL_VARIANT_CHROMA)
-        error = (_TONAL_SPOT_ERROR_HUE, _TONAL_SPOT_ERROR_CHROMA)
+
+        # For yellow/olive/green hues (40-140 deg in CIELAB), dark neutral tones
+        # with chroma > 3 look like murky swamp mud. Clamp neutral chroma so
+        # dark surfaces remain clean, elegant charcoal with a gentle warm tint.
+        if 40.0 <= seed_hue <= 140.0:
+            neutral_chroma = min(neutral_chroma, 2.0)
+            neutral_variant_chroma = min(neutral_variant_chroma, 3.5)
+
+        # Google Material Dislike rule: yellow-green / olive hues (88 to 115 deg)
+        # look sickly when oversaturated, so clamp primary chroma to avoid mustard:
+        if 88.0 <= seed_hue <= 115.0:
+            primary_chroma = min(primary_chroma, 16.0)
+
+        primary = (seed_hue, primary_chroma)
+        secondary = (seed_hue, secondary_chroma)
+        tertiary = (tertiary_hue, tertiary_chroma)
+        neutral = (seed_hue, neutral_chroma)
+        neutral_variant = (seed_hue, neutral_variant_chroma)
+        error = (error_hue, error_chroma)
         success = (150.0, 60.0)
-        warning = (85.0, 65.0)
+        # Keep warning readable as a warm signal color, but pull its hue
+        # toward the seed so it belongs to the active palette (M3 custom
+        # color harmonization, bounded to preserve the warning meaning).
+        warning_hue = (
+            _harmonize_hue(_STATUS_WARNING_HUE, seed_hue, _STATUS_HUE_HARMONIZE_DEG)
+            if seed_chroma >= 8.0
+            else _STATUS_WARNING_HUE
+        )
+        warning = (warning_hue, 65.0)
 
         def tone(palette: tuple[float, float], level: float) -> str:
             return _palette_tone(palette[0], palette[1], level).name()
@@ -413,15 +885,31 @@ class M3Theme:
             self.surface_container_highest = "#262626"
             self.surface_variant = "#1E1E1E"
         else:
-            self.surface = tone(neutral, 6)
-            self.surface_dim = tone(neutral, 6)
-            self.surface_bright = tone(neutral, 24)
-            self.surface_container_lowest = tone(neutral, 4)
-            self.surface_container_low = tone(neutral, 10)
-            self.surface_container = tone(neutral, 12)
-            self.surface_container_high = tone(neutral, 17)
-            self.surface_container_highest = tone(neutral, 22)
-            self.surface_variant = tone(neutral_variant, 30)
+            if is_2025:
+                surface_tones = {
+                    "surface": 4,
+                    "surface_dim": 4,
+                    "surface_bright": 18,
+                    "surface_container_lowest": 0,
+                    "surface_container_low": 6,
+                    "surface_container": 9,
+                    "surface_container_high": 12,
+                    "surface_container_highest": 15,
+                }
+            else:
+                surface_tones = {
+                    "surface": 6,
+                    "surface_dim": 6,
+                    "surface_bright": 24,
+                    "surface_container_lowest": 4,
+                    "surface_container_low": 10,
+                    "surface_container": 12,
+                    "surface_container_high": 17,
+                    "surface_container_highest": 22,
+                }
+            for attr, level in surface_tones.items():
+                setattr(self, attr, tone(neutral, level))
+            self.surface_variant = tone(neutral_variant, 15 if is_2025 else 30)
 
         self.on_surface = tone(neutral, 90)
         self.on_surface_variant = tone(neutral_variant, 80)

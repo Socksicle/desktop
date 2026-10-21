@@ -1,15 +1,20 @@
-"""UI strings for Russian, English, and Chinese.
+"""UI strings for Russian, English, Chinese, and Hebrew.
 
-Language is stored as settings["language"] ("ru", "en" or "zh", default "ru")
+Language is stored as settings["language"] ("ru", "en", "zh" or "he", default "ru")
 and applied at startup before widgets are built; changing it in Settings
 takes effect after restart, like the render backend.
 """
-from . import i18n_en, i18n_ru, i18n_zh
+from . import i18n_en, i18n_he, i18n_ru, i18n_zh
 
-SUPPORTED_LANGUAGES = ("ru", "en", "zh")
+SUPPORTED_LANGUAGES = ("ru", "en", "zh", "he")
 DEFAULT_LANGUAGE = "ru"
 
-_catalogs = {"ru": i18n_ru.STRINGS, "en": i18n_en.STRINGS, "zh": i18n_zh.STRINGS}
+_catalogs = {
+    "ru": i18n_ru.STRINGS,
+    "en": i18n_en.STRINGS,
+    "zh": i18n_zh.STRINGS,
+    "he": i18n_he.STRINGS,
+}
 _current = DEFAULT_LANGUAGE
 
 
@@ -26,9 +31,9 @@ def get_language() -> str:
 
 
 def _lookup(key: str):
-    """Raw catalog value: active language first, then fallbacks (zh → en → ru)."""
+    """Raw catalog value: active language first, then fallbacks (zh/he → en → ru)."""
     langs = [_current]
-    if _current == "zh":
+    if _current in ("zh", "he"):
         # Untranslated strings are better shown in English than in Russian.
         langs.append("en")
     if _current != DEFAULT_LANGUAGE:
@@ -41,7 +46,7 @@ def _lookup(key: str):
 
 
 def tr(key: str) -> str:
-    """Translated string for the active language (zh falls back to English, then Russian)."""
+    """Translated string for the active language (zh/he falls back to English, then Russian)."""
     value = _lookup(key)
     return value if isinstance(value, str) else key
 

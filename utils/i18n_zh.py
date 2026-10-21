@@ -24,7 +24,7 @@ STRINGS = {
     "groups.manual": "我的服务器",
     # Server list / empty state
     "servers.empty_title": "还没有服务器",
-    "servers.empty_hint": "点击顶部的“+”即可添加服务器或订阅",
+    "servers.empty_hint": "点击底部的“+”即可添加服务器或订阅",
     "servers.search_empty": "没找到服务器",
     "servers.search_empty_hint": "换个关键词再试试",
     # Tray
@@ -242,6 +242,8 @@ STRINGS = {
     "set.hub_appearance_sub": "配色、主题、滚动方向",
     "set.hub_connection": "连接",
     "set.hub_connection_sub": "代理内核、TUN、断网保护、DNS、SOCKS5 端口",
+    "set.hub_tunnel": "隧道",
+    "set.hub_tunnel_sub": "UDP 拦截、TLS 分片、MUX",
     "set.hub_ping": "延迟测试",
     "set.hub_ping_sub": "检测方式、显示样式、超时",
     "set.hub_subs": "订阅",
@@ -250,6 +252,7 @@ STRINGS = {
     "set.hub_system_sub": "自启动、托盘、事件日志",
     "set.amoled": "AMOLED 纯黑",
     "set.amoled_sub": "纯黑背景 (#000000)",
+    "set.theme_spec": "Material 配色规范",
     "set.invert": "反转滚动",
     "set.invert_sub": "反转鼠标滚轮方向",
     "set.card_server": "所选服务器卡片",
@@ -258,7 +261,6 @@ STRINGS = {
     "set.card_ip_sub": "连接后显示 IP 地址和会话时长",
     "set.flags": "国旗图标",
     "set.flags_sub": "在服务器旁显示国家/地区旗帜",
-    "set.render_label": "图形渲染方式",
     "set.restart_hint": "重启应用后生效",
     "set.engine_label": "代理内核",
     "set.tun": "TUN 模式",
@@ -281,6 +283,13 @@ STRINGS = {
     "set.hy2insecure_sub": "允许 Hy2 自签名证书。有风险：只建议对你自己的服务器开启",
     "set.blockudp": "屏蔽 UDP",
     "set.blockudp_sub": "丢弃 UDP 流量，只保留 TCP（重新连接后生效）",
+    "set.fragmentation": "TLS 分片",
+    "set.fragmentation_sub": "通过拆分 TLS 握手绕过 DPI（sing-box）",
+    "set.mux": "多路复用（MUX）",
+    "set.mux_sub": "在单个连接中复用多个流，减少握手开销（sing-box）",
+    "set.mux_protocol": "MUX 协议",
+    "set.mux_max_conn": "MUX 最大连接数",
+    "set.mux_max_conn_sub": "并行多路复用连接数（1-16）",
     "set.dns_label": "加密 DNS（DoH / DoT）",
     "set.dns_custom_ph": "https://... 或 tls://...",
     "set.ua_label": "订阅 User-Agent",
@@ -313,12 +322,14 @@ STRINGS = {
     "opt.theme.emerald": "祖母绿",
     "opt.theme.coral": "落日珊瑚",
     "opt.theme.custom": "自定义颜色",
-    "opt.render.auto": "自动（默认）",
-    "opt.render.software": "软件渲染（兼容性好，省显存）",
-    "opt.render.opengl": "硬件 OpenGL",
+    "opt.theme_spec.2021": "SPEC_2021",
+    "opt.theme_spec.2025": "SPEC_2025",
     "opt.engine.auto": "自动选择",
     "opt.engine.singbox": "sing-box",
     "opt.engine.xray": "Xray-core",
+    "opt.mux.h2mux": "h2mux（推荐）",
+    "opt.mux.smux": "smux",
+    "opt.mux.yamux": "yamux",
     "opt.dns.system": "系统默认",
     "opt.dns.cloudflare": "Cloudflare DoH (1.1.1.1)",
     "opt.dns.quad9": "Quad9 DoH (9.9.9.9)",
@@ -326,7 +337,7 @@ STRINGS = {
     "opt.dns.google": "Google DoH (8.8.8.8)",
     "opt.dns.custom": "自定义 DNS（DoH / DoT）...",
     "opt.ping.thp": "THP（推荐）",
-    "opt.ping.thp_sub": "TCP + HEAD 综合评分（推荐）",
+    "opt.ping.thp_sub": "多次 TCP 握手耗时的中位数（推荐）",
     "opt.ping.tcp": "TCP 连接",
     "opt.ping.tcp_sub": "快速检测端口是否可用",
     "opt.ping.head": "HTTP HEAD",
@@ -341,11 +352,11 @@ STRINGS = {
     "opt.display.both_sub": "指示条和数字同时显示",
     "ping.thp_help_title": "什么是 THP？",
     "ping.thp_help_text": (
-        "THP（TCP-HEAD 探测）是 Socksicle 自研的检测方式：在同一次连接中完成"
-        "一次 TCP 握手加一次 HEAD 请求，不使用 TLS。\n\n"
-        "综合得分由 TCP 耗时和加权后的 HTTP 耗时合并而来。"
-        "Hysteria2 节点使用 QUIC 数据报探测。"
-        "该检测不经过隧道，因此数值反映的是服务器的直连速度。"
-        "如果 TCP 连通而 HTTP 不通，节点仍视为可达，但得分会降低。"
+        "THP（TCP Handshake Probe）是 Socksicle 自研的检测方式：对服务器进行多次 "
+        "TCP 连接，不使用 TLS，也不发送 HTTP 请求。\n\n"
+        "得分是成功 TCP 握手耗时的中位数。部分尝试成功时，节点标记为不稳定；"
+        "全部失败时，标记为不可达。"
+        "检测直接进行，不经过隧道，因此数值反映服务器的直连延迟。"
+        "Hysteria2 节点不使用 THP，而是通过 QUIC、经隧道的 HTTP 或 TCP 单独检测。"
     ),
 }

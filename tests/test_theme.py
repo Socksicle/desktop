@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from PySide6.QtGui import QColor
 
-from utils.theme import M3Theme
+from utils.theme import M3Theme, _rgb_to_lch
 
 
 class M3ThemeTest(unittest.TestCase):
@@ -38,6 +38,49 @@ class M3ThemeTest(unittest.TestCase):
         self.assertTrue(theme.primary.startswith("#"))
         self.assertTrue(theme.on_primary.startswith("#"))
         self.assertTrue(theme.primary_container.startswith("#"))
+
+    def test_spec_defaults_to_2021(self):
+        self.assertEqual(M3Theme(preset_key="ocean").spec, "2021")
+
+    def test_spec_2025_uses_expressive_chroma_and_tones(self):
+        classic = M3Theme(preset_key="ocean")
+        expressive = M3Theme(preset_key="ocean", spec="2025")
+        self.assertGreater(
+            _rgb_to_lch(QColor(classic.primary))[1],
+            _rgb_to_lch(QColor(expressive.primary))[1],
+        )
+        self.assertNotEqual(classic.tertiary, expressive.tertiary)
+        self.assertNotEqual(classic.surface_container, expressive.surface_container)
+
+    def test_unknown_spec_falls_back_to_2021(self):
+        theme = M3Theme(preset_key="ocean", spec="1999")
+        self.assertEqual(theme.spec, "2021")
+        self.assertEqual(theme.primary, M3Theme(preset_key="ocean").primary)
+
+    @patch("sys.platform", "linux")
+    @patch("utils.theme._get_preferred_scheme_type", return_value=None)
+    @patch("utils.theme.M3Theme._get_linux_wallpaper_accent_color")
+    def test_spec_2021_restores_vivid_palette(self, mock_wallpaper, _mock_pref):
+        mock_wallpaper.return_value = (QColor("#5E798B"), "neutral", None)
+        theme = M3Theme(preset_key="dynamic", spec="2021")
+        self.assertGreater(_rgb_to_lch(QColor(theme.primary))[1], 20.0)
+
+    @patch("sys.platform", "linux")
+    @patch("utils.theme.M3Theme._get_linux_wallpaper_accent_color")
+    def test_spec_2025_keeps_adaptive_neutral(self, mock_wallpaper):
+        mock_wallpaper.return_value = (QColor("#5E798B"), "neutral", None)
+        theme = M3Theme(preset_key="dynamic", spec="2025")
+        self.assertLess(_rgb_to_lch(QColor(theme.primary))[1], 16.0)
+
+    def test_warning_hue_tracks_seed_but_stays_amber(self):
+        hues = {
+            key: _rgb_to_lch(QColor(M3Theme(preset_key=key).warning))[2]
+            for key in ("emerald", "lavender", "ocean", "coral")
+        }
+        for hue in hues.values():
+            self.assertGreaterEqual(hue, 60.0)
+            self.assertLessEqual(hue, 110.0)
+        self.assertGreater(hues["emerald"], hues["lavender"])
 
     def test_button_styles(self):
         theme = M3Theme(preset_key="ocean")
@@ -158,8 +201,9 @@ class XDGPortalThemeTest(unittest.TestCase):
         self.assertIsNone(val)
 
     @patch("sys.platform", "linux")
+    @patch("utils.theme.M3Theme._get_linux_wallpaper_accent_color", return_value=None)
     @patch("utils.theme.M3Theme._get_linux_portal_accent_color")
-    def test_linux_dynamic_applies_portal_accent(self, mock_portal_accent):
+    def test_linux_dynamic_applies_portal_accent(self, mock_portal_accent, mock_wallpaper):
         mock_portal_accent.return_value = QColor("#E91E63")
         theme = M3Theme(preset_key="dynamic")
         self.assertEqual(theme.preset_key, "dynamic")
@@ -167,8 +211,18 @@ class XDGPortalThemeTest(unittest.TestCase):
         mock_portal_accent.assert_called()
 
     @patch("sys.platform", "linux")
+    @patch("utils.theme.M3Theme._get_linux_wallpaper_accent_color")
+    def test_linux_dynamic_applies_wallpaper_accent(self, mock_wallpaper):
+        mock_wallpaper.return_value = QColor("#C4BB8A")
+        theme = M3Theme(preset_key="dynamic")
+        self.assertEqual(theme.preset_key, "dynamic")
+        self.assertTrue(theme.primary.startswith("#"))
+        mock_wallpaper.assert_called()
+
+    @patch("sys.platform", "linux")
     @patch("utils.theme.M3Theme._get_linux_portal_accent_color", return_value=None)
-    def test_linux_dynamic_fallback_to_lavender(self, mock_portal):
+    @patch("utils.theme.M3Theme._get_linux_wallpaper_accent_color", return_value=None)
+    def test_linux_dynamic_fallback_to_lavender(self, mock_wallpaper, mock_portal):
         theme = M3Theme(preset_key="dynamic")
         self.assertEqual(theme.preset_key, "dynamic")
         self.assertEqual(theme.primary, M3Theme(preset_key="lavender").primary)
@@ -188,7 +242,6 @@ def _make_window(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.platform_utils.get_config_dir", lambda: tmp_path)
     tw._reset()
     win = RoundedWindow()
-    win.show()
     return win
 
 
@@ -220,55 +273,60 @@ def test_lerp_theme_tokens_interpolates_each_key():
     assert lerp_theme_tokens(start, end, 1.0) == end
 
 
-def test_theme_switch_lerps_to_target(qapp, monkeypatch, tmp_path):
+def test_window_theme_switching(qapp, monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication
     from utils.theme import M3Theme
 
     win = _make_window(monkeypatch, tmp_path)
-    QApplication.processEvents()
+    try:
+        QApplication.processEvents()
 
-    win._on_settings_theme_changed("ocean")
-    assert win.theme.preset_key == "ocean"
-    assert win.settings["theme_preset"] == "ocean"
+        # 1. Switch lerps to target
+        win._on_settings_theme_changed("ocean")
+        assert win.theme.preset_key == "ocean"
+        assert win.settings["theme_preset"] == "ocean"
+        expected = M3Theme(preset_key="ocean")
+        assert win._theme_target_tokens["primary"] == expected.primary
+        win._theme_transition.finish_now()
+        QApplication.processEvents()
+        assert win.theme.primary == expected.primary
+        assert win.theme.surface == expected.surface
 
-    expected = M3Theme(preset_key="ocean")
-    assert win._theme_target_tokens["primary"] == expected.primary
-    win._theme_transition.finish_now()
-    QApplication.processEvents()
-    assert win.theme.primary == expected.primary
-    assert win.theme.surface == expected.surface
+        # 2. Rapid reswitch targets latest
+        win._on_settings_theme_changed("ocean")
+        win._on_settings_theme_changed("emerald")
+        QApplication.processEvents()
+        expected = M3Theme(preset_key="emerald")
+        assert win.theme.preset_key == "emerald"
+        assert win._theme_target_tokens["primary"] == expected.primary
+        win._theme_transition.finish_now()
+        QApplication.processEvents()
+        assert win.theme.primary == expected.primary
 
+        # 3. Same preset applies without animation
+        current = win.settings.get("theme_preset", "emerald")
+        win._on_settings_theme_changed(current)
+        QApplication.processEvents()
+        assert win._theme_transition.is_running() is False
+        assert win._theme_target_tokens == {}
 
-def test_theme_rapid_reswitch_targets_latest(qapp, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QApplication
-    from utils.theme import M3Theme
+        # 4. Custom color uses stored color
+        win.settings["theme_custom_color"] = "#4BA3E3"
+        win._on_settings_theme_changed("custom")
+        assert win.theme.preset_key == "custom"
+        win._theme_transition.finish_now()
+        QApplication.processEvents()
+        assert win.theme.primary == M3Theme(preset_key="ocean").primary
 
-    win = _make_window(monkeypatch, tmp_path)
-    QApplication.processEvents()
-
-    win._on_settings_theme_changed("ocean")
-    win._on_settings_theme_changed("emerald")
-    QApplication.processEvents()
-
-    expected = M3Theme(preset_key="emerald")
-    assert win.theme.preset_key == "emerald"
-    assert win._theme_target_tokens["primary"] == expected.primary
-    win._theme_transition.finish_now()
-    QApplication.processEvents()
-    assert win.theme.primary == expected.primary
-
-
-def test_theme_same_preset_applies_without_animation(qapp, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QApplication
-
-    win = _make_window(monkeypatch, tmp_path)
-    QApplication.processEvents()
-
-    current = win.settings.get("theme_preset", "dynamic")
-    win._on_settings_theme_changed(current)
-    QApplication.processEvents()
-    assert win._theme_transition.is_running() is False
-    assert win._theme_target_tokens == {}
+        # 5. Selected spec (2025)
+        win.settings["theme_spec"] = "2025"
+        win._on_settings_theme_changed("ocean")
+        expected_2025 = M3Theme(preset_key="ocean", spec="2025")
+        win._theme_transition.finish_now()
+        QApplication.processEvents()
+        assert win.theme.primary == expected_2025.primary
+    finally:
+        win.close()
 
 
 def test_custom_seed_builds_palette_from_color():
@@ -306,16 +364,36 @@ def test_transition_decimates_intermediate_frames(qapp):
     assert seen[-1] == {"primary": "#ffffff"}
 
 
-def test_theme_switch_to_custom_uses_stored_color(qapp, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QApplication
-    from utils.theme import M3Theme
 
-    win = _make_window(monkeypatch, tmp_path)
-    QApplication.processEvents()
 
-    win.settings["theme_custom_color"] = "#4BA3E3"
-    win._on_settings_theme_changed("custom")
-    assert win.theme.preset_key == "custom"
-    win._theme_transition.finish_now()
-    QApplication.processEvents()
-    assert win.theme.primary == M3Theme(preset_key="ocean").primary
+
+def test_extract_dominant_color_hue_binning(tmp_path):
+    from PySide6.QtGui import QImage, QColor
+    from utils.theme import _extract_dominant_color_from_image
+
+    img_path = str(tmp_path / "test_wp.png")
+    img = QImage(64, 64, QImage.Format_RGB32)
+    img.fill(QColor("#2E7D32"))  # Rich forest green
+    # Add a few noisy outlier pixels
+    img.setPixelColor(0, 0, QColor("#FF0000"))
+    img.setPixelColor(1, 1, QColor("#0000FF"))
+    img.save(img_path)
+
+    dom, scheme = _extract_dominant_color_from_image(img_path)
+    assert dom is not None
+    assert dom.isValid()
+    # Should extract green dominant hue (~120 deg), not the single red/blue outlier
+    assert 100 <= dom.hsvHue() <= 140
+
+
+def test_extract_dominant_color_monochrome_returns_none(tmp_path):
+    from PySide6.QtGui import QImage, QColor
+    from utils.theme import _extract_dominant_color_from_image
+
+    img_path = str(tmp_path / "black_wp.png")
+    img = QImage(32, 32, QImage.Format_RGB32)
+    img.fill(QColor("#000000"))
+    img.save(img_path)
+
+    dom, _ = _extract_dominant_color_from_image(img_path)
+    assert dom is None

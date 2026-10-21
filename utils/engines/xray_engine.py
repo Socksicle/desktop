@@ -45,14 +45,19 @@ def _check_usable(path) -> "CheckResult":
 
 def _build_xray_stream_settings(server) -> dict:
     """Build streamSettings for VLESS/VMess outbounds."""
-    stream = {"network": server.transport or "tcp"}
+    transport = (getattr(server, 'transport', 'tcp') or 'tcp').lower()
+    if transport in ('http', 'h2', 'h3', 'quic'):
+        raise ValueError(
+            f"Xray 26+ does not support '{transport}' transport (removed in Xray 26; use XHTTP instead)"
+        )
 
-    security = getattr(server, 'security', 'none')
+    stream = {"network": transport}
+
+    security = (getattr(server, 'security', 'none') or 'none').lower()
     fp = getattr(server, 'fingerprint', 'chrome')
     sni = getattr(server, 'server_name', '') or getattr(server, 'host', '')
     host_header = getattr(server, 'host_header', '')
     path = getattr(server, 'path', '')
-    transport = getattr(server, 'transport', 'tcp')
 
     if security == 'tls':
         stream["security"] = "tls"
@@ -61,6 +66,20 @@ def _build_xray_stream_settings(server) -> dict:
             tls_settings["serverName"] = sni
         if fp:
             tls_settings["fingerprint"] = fp
+        alpn = getattr(server, 'alpn', None)
+        if alpn:
+            tls_settings["alpn"] = alpn if isinstance(alpn, list) else [alpn]
+        pcs = getattr(server, 'pinned_peer_cert_sha256', '') or getattr(server, 'pcs', '')
+        if pcs:
+            tls_settings["pinnedPeerCertSha256"] = pcs
+        pcn = (
+            getattr(server, 'verify_peer_cert_by_name', '')
+            or getattr(server, 'verifyPeerCertByName', '')
+            or getattr(server, 'pcn', '')
+            or getattr(server, 'vcn', '')
+        )
+        if pcn:
+            tls_settings["verifyPeerCertByName"] = pcn
         stream["tlsSettings"] = tls_settings
     elif security == 'reality':
         stream["security"] = "reality"
@@ -69,12 +88,15 @@ def _build_xray_stream_settings(server) -> dict:
             reality_settings["serverName"] = sni
         if fp:
             reality_settings["fingerprint"] = fp
-        pbk = getattr(server, 'public_key', '')
+        pbk = getattr(server, 'public_key', '') or getattr(server, 'password', '')
         sid = getattr(server, 'short_id', '')
+        spx = getattr(server, 'spider_x', '')
         if pbk:
             reality_settings["publicKey"] = pbk
         if sid:
             reality_settings["shortId"] = sid
+        if spx:
+            reality_settings["spiderX"] = spx
         stream["realitySettings"] = reality_settings
 
     if transport == 'ws':
@@ -90,26 +112,50 @@ def _build_xray_stream_settings(server) -> dict:
             grpc_settings["serviceName"] = path
         stream["grpcSettings"] = grpc_settings
     elif transport == 'xhttp':
-        xhttp_settings = {}
+        mode = getattr(server, 'xhttp_mode', 'auto') or 'auto'
+        if mode not in ("auto", "packet-up", "stream-up", "stream-one"):
+            raise ValueError(f"Invalid XHTTP mode: {mode}")
+        xhttp_settings = {"mode": mode}
         if path:
             xhttp_settings["path"] = path
         if host_header:
             xhttp_settings["host"] = host_header
         stream["xhttpSettings"] = xhttp_settings
+    elif transport == 'kcp':
+        kcp_settings = {}
+        header_type = getattr(server, 'header_type', '')
+        seed = getattr(server, 'seed', '')
+        if header_type:
+            kcp_settings["header"] = {"type": header_type}
+        if seed:
+            kcp_settings["seed"] = seed
+        if kcp_settings:
+            stream["kcpSettings"] = kcp_settings
+    elif transport == 'httpupgrade':
+        hu_settings = {}
+        if path:
+            hu_settings["path"] = path
+        if host_header:
+            hu_settings["host"] = host_header
+        stream["httpupgradeSettings"] = hu_settings
+    elif transport == 'tcp':
+        header_type = getattr(server, 'header_type', '')
+        if header_type:
+            stream["tcpSettings"] = {"header": {"type": header_type}}
 
     return stream
 
 
 def _build_xray_vless_outbound(server) -> dict:
     """Generate outbound dict for a VLESS server."""
-    from utils.server_model import ProxyProtocol
-    transport = getattr(server, 'transport', 'tcp') or 'tcp'
+    transport = (getattr(server, 'transport', 'tcp') or 'tcp').lower()
+    security = (getattr(server, 'security', 'none') or 'none').lower()
     flow = getattr(server, 'flow', '') or ''
     user = {
         "id": getattr(server, 'uuid', ''),
         "encryption": getattr(server, 'encryption', 'none') or 'none',
     }
-    if flow and transport == 'tcp':
+    if flow and transport in ('tcp', 'raw') and security in ('tls', 'reality'):
         user["flow"] = flow
 
     settings = {
@@ -165,10 +211,27 @@ def _build_xray_ss_outbound(server) -> dict:
     }
 
 
+def _build_xray_trojan_outbound(server) -> dict:
+    """Generate outbound dict for a Trojan server."""
+    return {
+        "tag": "proxy",
+        "protocol": "trojan",
+        "settings": {
+            "servers": [{
+                "address": server.host,
+                "port": int(server.port),
+                "password": getattr(server, "password", "") or "",
+            }]
+        },
+        "streamSettings": _build_xray_stream_settings(server),
+    }
+
+
 _XRAY_OUTBOUND_BUILDERS = {
     ProxyProtocol.SHADOWSOCKS: _build_xray_ss_outbound,
     ProxyProtocol.VLESS: _build_xray_vless_outbound,
     ProxyProtocol.VMESS: _build_xray_vmess_outbound,
+    ProxyProtocol.TROJAN: _build_xray_trojan_outbound,
 }
 
 

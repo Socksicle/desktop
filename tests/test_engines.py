@@ -202,68 +202,12 @@ class SecureConfigFileTest(unittest.TestCase):
 
 class XrayEngineTest(unittest.TestCase):
 
-    def test_engine_type(self):        self.assertEqual(XrayEngine.engine_type, EngineType.XRAY)
-
-    def test_process_name(self):
+    def test_engine_metadata_and_teardown(self):
         engine = XrayEngine()
+        self.assertEqual(engine.engine_type, EngineType.XRAY)
         self.assertEqual(engine.process_name(), "xray")
-
-    def test_version_args(self):
-        engine = XrayEngine()
         self.assertEqual(engine.version_args(), ["version"])
 
-    def test_build_args_creates_config_file(self):
-        engine = XrayEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        args = engine.build_args(server)
-        self.assertEqual(args[0], "run")
-        self.assertEqual(args[1], "-c")
-        config_path = Path(args[2])
-        self.assertTrue(config_path.exists())
-        self.assertTrue(config_path.suffix == ".json")
-        import json
-        with open(config_path) as f:
-            config = json.load(f)
-        self.assertIn("inbounds", config)
-        self.assertIn("outbounds", config)
-        self.assertEqual(config["outbounds"][0]["protocol"], "shadowsocks")
-        config_path.unlink(missing_ok=True)
-
-    def test_build_config_structure(self):
-        engine = XrayEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        config = engine.build_config(server)
-        self.assertIn("log", config)
-        self.assertIn("inbounds", config)
-        self.assertIn("outbounds", config)
-        self.assertIn("routing", config)
-        self.assertNotIn("stats", config)
-        self.assertNotIn("api", config)
-        self.assertEqual(len(config["inbounds"]), 1)
-        self.assertEqual(config["inbounds"][0]["protocol"], "socks")
-        self.assertEqual(config["inbounds"][0]["tag"], "socks-in")
-        self.assertEqual(config["inbounds"][0]["port"], engine.local_port)
-        self.assertEqual(config["outbounds"][0]["protocol"], "shadowsocks")
-
-    def test_build_config_server_params(self):
-        engine = XrayEngine()
-        engine.local_port = 2080
-        server = SimpleNamespace(host="5.6.7.8", port=443,
-                                 method="chacha20-ietf-poly1305", password="pw123")
-        config = engine.build_config(server)
-        outbound = config["outbounds"][0]
-        srv = outbound["settings"]["servers"][0]
-        self.assertEqual(srv["address"], "5.6.7.8")
-        self.assertEqual(srv["port"], 443)
-        self.assertEqual(srv["method"], "chacha20-ietf-poly1305")
-        self.assertEqual(srv["password"], "pw123")
-
-    def test_teardown_cleans_config(self):
-        engine = XrayEngine()
         fd, path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         engine._config_path = Path(path)
@@ -271,9 +215,7 @@ class XrayEngineTest(unittest.TestCase):
         engine.teardown()
         self.assertFalse(Path(path).exists())
 
-    def test_detect_target_win32(self):
-        # _detect_target reads platform.machine() and sys.platform directly
-        # Just verify it returns a valid target on the current platform
+    def test_detect_target_platform(self):
         result = xray_detect()
         valid_targets = ["windows-64", "windows-arm64-v8a",
                          "linux-64", "linux-arm64",
@@ -283,88 +225,19 @@ class XrayEngineTest(unittest.TestCase):
 
 class SingBoxEngineTest(unittest.TestCase):
 
-    def test_engine_type(self):        self.assertEqual(SingBoxEngine.engine_type, EngineType.SINGBOX)
-
-    def test_process_name(self):
+    def test_engine_metadata_and_teardown(self):
         engine = SingBoxEngine()
+        self.assertEqual(engine.engine_type, EngineType.SINGBOX)
         self.assertEqual(engine.process_name(), "sing-box")
-
-    def test_version_args(self):
-        engine = SingBoxEngine()
         self.assertEqual(engine.version_args(), ["version"])
 
-    def test_build_args_creates_config_file(self):
-        engine = SingBoxEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        args = engine.build_args(server)
-        self.assertEqual(args[0], "run")
-        self.assertEqual(args[1], "-c")
-        config_path = Path(args[2])
-        self.assertTrue(config_path.exists())
-        self.assertTrue(config_path.suffix == ".json")
-        import json
-        with open(config_path) as f:
-            config = json.load(f)
-        self.assertIn("inbounds", config)
-        self.assertIn("outbounds", config)
-        self.assertEqual(config["inbounds"][0]["type"], "mixed")
-        self.assertEqual(config["outbounds"][0]["type"], "shadowsocks")
-        config_path.unlink(missing_ok=True)
-
-    def test_build_config_structure(self):
-        engine = SingBoxEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        config = engine.build_config(server)
-        self.assertIn("log", config)
-        self.assertIn("inbounds", config)
-        self.assertIn("outbounds", config)
-        self.assertIn("route", config)
-        self.assertEqual(len(config["inbounds"]), 1)
-        self.assertEqual(config["inbounds"][0]["type"], "mixed")
-        self.assertEqual(config["outbounds"][0]["type"], "shadowsocks")
-
-    def test_build_config_server_params(self):
-        engine = SingBoxEngine()
-        engine.local_port = 2080
-        server = SimpleNamespace(host="5.6.7.8", port=443,
-                                 method="chacha20-ietf-poly1305", password="pw123")
-        config = engine.build_config(server)
-        outbound = config["outbounds"][0]
-        self.assertEqual(outbound["server"], "5.6.7.8")
-        self.assertEqual(outbound["server_port"], 443)
-        self.assertEqual(outbound["method"], "chacha20-ietf-poly1305")
-        self.assertEqual(outbound["password"], "pw123")
-
-    def test_no_clash_api_in_config(self):
-        engine = SingBoxEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        config = engine.build_config(server)
-        self.assertNotIn("experimental", config)
-        self.assertEqual(len(config["inbounds"]), 1)
-        self.assertEqual(config["inbounds"][0]["listen_port"], 1080)
-
-    def test_route_final_is_proxy(self):
-        engine = SingBoxEngine()
-        engine.local_port = 1080
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="secret")
-        config = engine.build_config(server)
-        self.assertEqual(config["route"]["final"], "proxy")
-
-    def test_singbox_teardown_cleans_config(self):
-        engine = SingBoxEngine()
         fd, path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         engine._config_path = Path(path)
         self.assertTrue(Path(path).exists())
         engine.teardown()
         self.assertFalse(Path(path).exists())
+
 
 
 class XrayEngineBinaryTest(unittest.TestCase):

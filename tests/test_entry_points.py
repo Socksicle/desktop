@@ -180,6 +180,8 @@ class WindowsPathTest(unittest.TestCase):
              mock.patch.object(su.logging, "getLogger"), \
              mock.patch.object(su, "set_app_user_model_id"), \
              mock.patch.object(su, "install_excepthook"), \
+             mock.patch.object(su, "_register_taskbar_created_message",
+                               return_value=0xC123), \
              mock.patch.object(main, "QApplication",
                                return_value=app_inst), \
              mock.patch.object(main, "RoundedWindow",
@@ -199,7 +201,7 @@ class WindowsPathTest(unittest.TestCase):
         self.assertIsInstance(app_inst.native_filter,
                               su.TrayAndPowerFilter)
         app_inst.native_filter.on_taskbar_created()
-        window_inst.tray_icon.show.assert_called_once_with()
+        window_inst.tray_manager.restore.assert_called_once_with()
         app_inst.native_filter.on_resume()
         window_inst.reconnect_after_resume.assert_called_once_with()
 

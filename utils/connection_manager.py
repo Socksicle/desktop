@@ -21,6 +21,10 @@ from .i18n import tr
 from .ping import socks5_proxy_ready, ProxyPingJob, PING_PROBE_HOST, parse_ping_url, DEFAULT_PING_TIMEOUT
 from .engines.engine_manager import get_current_engine
 from .engines.base import DEFAULT_LOCAL_PORT, check_local_port
+from .engines.singbox_config import (
+    MUX_DEFAULT_PROTOCOL,
+    MUX_MAX_CONNECTIONS_DEFAULT,
+)
 
 log = logging.getLogger("connection_manager")
 
@@ -145,6 +149,14 @@ class ConnectionManager(QObject):
             self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
         if hasattr(self._engine, "block_udp"):
             self._engine.block_udp = bool(self._settings.get("block_udp", False))
+        if hasattr(self._engine, "tls_fragment"):
+            self._engine.tls_fragment = bool(self._settings.get("tls_fragment", False))
+        if hasattr(self._engine, "mux_enabled"):
+            self._engine.mux_enabled = bool(self._settings.get("mux_enabled", False))
+            self._engine.mux_protocol = self._settings.get(
+                "mux_protocol", MUX_DEFAULT_PROTOCOL)
+            self._engine.mux_max_connections = self._settings.get(
+                "mux_max_connections", MUX_MAX_CONNECTIONS_DEFAULT)
         self.kill_switch_enabled = bool(self._settings.get("killswitch", False))
         engine_val = self._settings.get("engine", "auto")
         if tun_mode:
@@ -195,7 +207,9 @@ class ConnectionManager(QObject):
         # the active engine before (or independently of) a switch; without
         # this carry-over a dropped engine takes custom_dns and the toggles
         # with it and the replacement silently falls back to defaults.
-        for attr in ("custom_dns", "hy2_insecure", "block_udp", "tun_mode"):
+        for attr in ("custom_dns", "hy2_insecure", "block_udp", "tun_mode",
+                     "tls_fragment", "mux_enabled", "mux_protocol",
+                     "mux_max_connections"):
             if hasattr(old, attr) and hasattr(engine, attr):
                 setattr(engine, attr, getattr(old, attr))
         if hasattr(self._engine, "set_available_servers") and hasattr(self, "_available_servers"):
@@ -274,6 +288,14 @@ class ConnectionManager(QObject):
                 self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
             if hasattr(self._engine, "block_udp"):
                 self._engine.block_udp = bool(self._settings.get("block_udp", False))
+            if hasattr(self._engine, "tls_fragment"):
+                self._engine.tls_fragment = bool(self._settings.get("tls_fragment", False))
+            if hasattr(self._engine, "mux_enabled"):
+                self._engine.mux_enabled = bool(self._settings.get("mux_enabled", False))
+                self._engine.mux_protocol = self._settings.get(
+                    "mux_protocol", MUX_DEFAULT_PROTOCOL)
+                self._engine.mux_max_connections = self._settings.get(
+                    "mux_max_connections", MUX_MAX_CONNECTIONS_DEFAULT)
 
             self.state = CONNECTING
             self.is_connecting = True

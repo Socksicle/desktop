@@ -1,97 +1,104 @@
-SOCKSICLE - PRIVACY POLICY
+SOCKSICLE DESKTOP - PRIVACY POLICY
 =============================================================
-Last Updated: September 2026
+Last Updated: 2026
 
-This Privacy Policy applies to the Socksicle application
+This Privacy Policy applies to the Socksicle Desktop application
 ("the Application", "we", "us", or "our").
 
-We take user privacy seriously. Socksicle is designed from the ground up as
-a client-side tool with a strict no-logs approach.
+We respect user privacy. Socksicle Desktop is architected from the ground
+up as an autonomous client-side application operating under a strict
+no-logs policy.
 
 
-1. NO-LOGS POLICY (INTERNET TRAFFIC)
+1. NO-LOGS POLICY (NETWORK TRAFFIC)
 -------------------------------------------------------------
-- We do NOT inspect, collect, monitor, record, store, or sell your internet
-  traffic, DNS requests, visited websites, data payloads, or connection metadata.
-- When the VPN service is active, all network traffic is processed locally on
-  your device and forwarded directly to the remote server configurations or
-  proxies specified by you or your subscription provider.
-- We operate no centralized intermediary servers that intercept your traffic.
+- We do NOT inspect, collect, monitor, record, store, or share your
+  network traffic, DNS requests, visited domains, data payloads, or
+  connection metadata.
+- When connected (either via local SOCKS5 proxy or full TUN virtual adapter),
+  all traffic is processed locally on your device by the chosen routing core
+  (sing-box or Xray) and routed directly to the remote proxy server configured
+  by you or your subscription provider.
+- We do not own, operate, or route traffic through intermediary proxy servers.
 
 
-2. DATA STORED LOCALLY ON YOUR DEVICE
+2. DATA STORED LOCALLY ON YOUR COMPUTER
 -------------------------------------------------------------
-All data required for the operation of the Application is stored solely on
-your device inside the Application's private storage sandbox:
-- Proxy server profiles and configurations (VLESS, Hysteria2, Shadowsocks, etc.).
-- Subscription URLs and fetched server lists.
-- User interface preferences (chosen theme, sorting mode, language).
-- Routing rules, per-app proxy lists, and bypass settings.
-- Diagnostic logs, if enabled by you for troubleshooting.
+All data required for the operation of the Application resides exclusively
+in your user-specific local application directory (%APPDATA%/socksicle on
+Windows or ~/.config/socksicle on Linux):
+- Proxy server profiles and configurations (VLESS, VMess, Shadowsocks,
+  Hysteria 2, Trojan, TUIC, etc.).
+- Subscription URLs and cached node lists.
+- Interface preferences (theme mode, accent color, language, tray behavior,
+  and launch settings).
+- Custom routing rules, direct/bypass lists, and DNS server settings.
+- Diagnostic logs of proxy cores (if logging is explicitly enabled by you).
 
-This information is never transmitted to our servers or any third-party
-analytics providers.
+This data is strictly private and is never uploaded to our servers or to
+any third party.
 
 
 3. SUBSCRIPTION UPDATES AND EXTERNAL SERVERS
 -------------------------------------------------------------
-- When you add a subscription URL or enable automatic subscription updates,
-  the Application makes standard HTTP/HTTPS requests directly to the third-party
-  provider hosting your subscription.
-- When connecting to a proxy server, the connection is established directly
-  between your device and the target server.
-- We have no access to, control over, or responsibility for the privacy practices,
-  logs, or policies of third-party subscription providers or server operators.
+- When you add or refresh a subscription, the Application performs direct
+  HTTP/HTTPS requests to the third-party endpoint providing your subscription.
+- When connecting to a proxy node, the network connection is established
+  directly between your computer and the target proxy server.
+- The developers of Socksicle Desktop have no access to, affiliation with,
+  or responsibility for the privacy practices and logging policies of
+  third-party subscription providers or server operators.
 
 
-4. DEVICE IDENTIFIERS AND LOCAL HARDWARE ID (HWID)
+4. LOCAL HARDWARE IDENTIFIER (HWID / INSTALLATION ID)
 -------------------------------------------------------------
-- The Application may compute a local hardware identifier (HWID) on your
-  device solely for local configuration management or developer feature unlock.
-- This identifier is kept strictly on your device and is not linked to your
-  personal identity or transmitted to third-party advertising or tracking networks.
+- The Application may compute a local hardware identifier (HWID) based on
+  system identifiers (such as motherboard serial or machine-id) solely for
+  internal configuration indexing or unlocking developer tools.
+- This identifier is kept strictly on your local machine and is never linked
+  to your personal identity, transmitted over the network, or used for tracking.
 
 
-5. THIRD-PARTY SDKs AND ANALYTICS
+5. THIRD-PARTY ANALYTICS AND TELEMETRY
 -------------------------------------------------------------
-- Socksicle does NOT contain third-party advertising SDKs (such as Google AdMob).
-- Socksicle does NOT contain third-party behavioral analytics or tracking SDKs
-  (such as Firebase Analytics, Facebook SDK, AppsFlyer, etc.).
-- The Application does not track your activity across third-party apps or websites.
+- Socksicle Desktop contains NO built-in analytics frameworks, telemetry,
+  advertising SDKs, or background metric collectors.
+- The Application does not monitor your activity across other applications
+  or websites.
 
 
-6. ANDROID SYSTEM PERMISSIONS
+6. OPERATING SYSTEM PERMISSIONS AND NETWORK INTERFACES
 -------------------------------------------------------------
-The Application requests only the minimal permissions required for VPN and
-proxy functionality:
-- android.permission.BIND_VPN_SERVICE: Required to create a local virtual network
-  interface (TUN) for routing traffic through the selected proxy core.
-- android.permission.FOREGROUND_SERVICE and FOREGROUND_SERVICE_SYSTEM_EXEMPTED:
-  Required by Android to maintain continuous proxy connections in the background
-  without being prematurely terminated by the operating system.
-- android.permission.POST_NOTIFICATIONS: Used strictly to show the ongoing VPN
-  connection status and quick-disconnect controls in the Android status bar.
+The Application requests only the permissions necessary for the selected mode:
+- Local Proxy Mode (SOCKS5 / HTTP): Runs within standard user-space permissions
+  without requiring elevated administrative privileges.
+- TUN Virtual Adapter Mode: Interacts with the system network stack to capture
+  and route system-wide traffic:
+  * On Windows: Uses the Wintun driver (wintun.dll), requiring administrator
+    privileges (User Account Control / UAC prompt).
+  * On Linux: Creates a virtual TUN interface (/dev/net/tun), requiring root
+    privileges or PolicyKit authentication (pkexec or CAP_NET_ADMIN).
+- Autostart: When enabled in Settings, registers a standard user-level startup entry
+  in the Windows Registry (HKCU) or a desktop entry in ~/.config/autostart on Linux.
 
 
-7. CRASH REPORTS AND USER-INITIATED LOGS
+7. CRASH REPORTS AND DIAGNOSTIC LOGS
 -------------------------------------------------------------
-- If an error occurs, diagnostic information is logged only into the local memory
-  or local storage of the device.
-- Crash reports and application logs are NEVER uploaded automatically.
-- Any bug report or log file shared by you (via GitHub Issues or Telegram) is
-  transmitted solely upon your explicit manual action.
+- Diagnostic information and core logs are kept solely in local storage.
+- Crash dumps and logs are NEVER transmitted automatically.
+- Any sharing of logs with developers (via GitHub Issues or community channels)
+  is performed exclusively through manual, voluntary action by the user.
 
 
 8. CHANGES TO THIS PRIVACY POLICY
 -------------------------------------------------------------
 We may update this Privacy Policy from time to time. Any changes will be
-reflected by updating the "Last Updated" date at the top of this document
-and publishing the revised policy in the official repository.
+published in the official project repository with the revision date.
 
 
 9. CONTACT INFORMATION
 -------------------------------------------------------------
-If you have any questions or concerns regarding this Privacy Policy,
-you can reach the project maintainers via:
-- GitHub: https://github.com/socksicle/Socksicle
+For questions or concerns regarding this Privacy Policy, please contact
+the project maintainers:
+- GitHub: https://github.com/socksicle/desktop
 - Telegram: https://t.me/iwtsyddd

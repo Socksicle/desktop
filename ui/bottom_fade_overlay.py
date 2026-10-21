@@ -7,11 +7,11 @@ All mouse events pass through transparently to the underlying scroll area.
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPainter, QColor, QBrush, QLinearGradient
+from PySide6.QtGui import QPainter, QColor, QBrush, QLinearGradient, QPainterPath
 
 
 class BottomFadeOverlay(QWidget):
-    """Bottom gradient fade into theme.surface."""
+    """Bottom gradient fade into theme.surface with anti-aliased rounded bottom corners."""
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
@@ -22,6 +22,7 @@ class BottomFadeOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
         w = float(self.width())
         h = float(self.height())
         if w <= 0.0 or h <= 0.0:
@@ -42,4 +43,16 @@ class BottomFadeOverlay(QWidget):
         grad.setColorAt(0.45, c1)
         grad.setColorAt(1.0, c2)
 
-        painter.fillRect(QRectF(0.0, 0.0, w, h), QBrush(grad))
+        # Smoothly round bottom-left and bottom-right corners by 32px to match
+        # rootContainer's border-radius with true subpixel anti-aliasing.
+        r = min(32.0, min(w / 2.0, h))
+        path = QPainterPath()
+        path.moveTo(0.0, 0.0)
+        path.lineTo(w, 0.0)
+        path.lineTo(w, max(0.0, h - r))
+        path.arcTo(w - 2.0 * r, h - 2.0 * r, 2.0 * r, 2.0 * r, 0.0, -90.0)
+        path.lineTo(r, h)
+        path.arcTo(0.0, h - 2.0 * r, 2.0 * r, 2.0 * r, 270.0, -90.0)
+        path.closeSubpath()
+
+        painter.fillPath(path, QBrush(grad))

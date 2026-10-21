@@ -24,7 +24,7 @@ STRINGS = {
     "groups.manual": "Мои серверы",
     # Server list / empty state
     "servers.empty_title": "Список серверов пуст",
-    "servers.empty_hint": "Нажмите «+» вверху экрана, чтобы добавить сервер или подписку",
+    "servers.empty_hint": "Нажмите «+» внизу экрана, чтобы добавить сервер или подписку",
     "servers.search_empty": "Ничего не найдено",
     "servers.search_empty_hint": "Попробуйте изменить поисковый запрос",
     # Tray
@@ -244,6 +244,8 @@ STRINGS = {
     "set.hub_appearance_sub": "Цвета, темы оформления, направление прокрутки",
     "set.hub_connection": "Соединение",
     "set.hub_connection_sub": "Ядро прокси, TUN, Kill Switch, DNS, порт SOCKS5",
+    "set.hub_tunnel": "Туннель",
+    "set.hub_tunnel_sub": "Блокировка UDP, фрагментация, MUX",
     "set.hub_ping": "Пинг",
     "set.hub_ping_sub": "Способ проверки задержки, отображение, таймаут",
     "set.hub_subs": "Подписки",
@@ -252,6 +254,7 @@ STRINGS = {
     "set.hub_system_sub": "Автозапуск, трей, журнал событий",
     "set.amoled": "AMOLED Pure Dark",
     "set.amoled_sub": "Абсолютно черный фон (#000000)",
+    "set.theme_spec": "Спецификация цвета Material",
     "set.invert": "Инвертировать прокрутку",
     "set.invert_sub": "Альтернативное направление колеса мыши",
     "set.card_server": "Карточка выбранного сервера",
@@ -260,7 +263,6 @@ STRINGS = {
     "set.card_ip_sub": "Показывать IP-адрес и таймер сессии при подключении",
     "set.flags": "Флаги стран",
     "set.flags_sub": "Показывать флаги стран у серверов",
-    "set.render_label": "Графический рендер",
     "set.restart_hint": "Применяется после перезапуска приложения",
     "set.engine_label": "Ядро прокси",
     "set.tun": "Режим TUN",
@@ -283,6 +285,13 @@ STRINGS = {
     "set.hy2insecure_sub": "Разрешить самоподписанные сертификаты Hy2. Небезопасно: включайте только для своих серверов",
     "set.blockudp": "Блокировать UDP",
     "set.blockudp_sub": "Отбрасывать UDP-трафик, оставить только TCP (применяется после переподключения)",
+    "set.fragmentation": "Фрагментация TLS",
+    "set.fragmentation_sub": "Обход DPI через разбиение TLS-рукопожатия (sing-box)",
+    "set.mux": "Мультиплексирование (MUX)",
+    "set.mux_sub": "Несколько потоков в одном соединении — меньше накладных расходов (sing-box)",
+    "set.mux_protocol": "Протокол MUX",
+    "set.mux_max_conn": "Максимум MUX-соединений",
+    "set.mux_max_conn_sub": "Параллельных мультиплексированных соединений (1-16)",
     "set.dns_label": "Защищенный DNS (DoH / DoT)",
     "set.dns_custom_ph": "https://... или tls://...",
     "set.ua_label": "User-Agent для подписок",
@@ -315,12 +324,14 @@ STRINGS = {
     "opt.theme.emerald": "Изумрудный лес",
     "opt.theme.coral": "Закатный коралл",
     "opt.theme.custom": "Свой цвет",
-    "opt.render.auto": "Автоматически (по умолчанию)",
-    "opt.render.software": "Программный (совместимость, меньше VRAM)",
-    "opt.render.opengl": "Аппаратный OpenGL",
+    "opt.theme_spec.2021": "SPEC_2021",
+    "opt.theme_spec.2025": "SPEC_2025",
     "opt.engine.auto": "Автовыбор",
     "opt.engine.singbox": "sing-box",
     "opt.engine.xray": "Xray-core",
+    "opt.mux.h2mux": "h2mux (рекомендуется)",
+    "opt.mux.smux": "smux",
+    "opt.mux.yamux": "yamux",
     "opt.dns.system": "Системный / по умолчанию",
     "opt.dns.cloudflare": "Cloudflare DoH (1.1.1.1)",
     "opt.dns.quad9": "Quad9 DoH (9.9.9.9)",
@@ -328,7 +339,7 @@ STRINGS = {
     "opt.dns.google": "Google DoH (8.8.8.8)",
     "opt.dns.custom": "Свой DNS (DoH / DoT)...",
     "opt.ping.thp": "THP (рекомендуется)",
-    "opt.ping.thp_sub": "Комплексная оценка TCP + HEAD (рекомендуется)",
+    "opt.ping.thp_sub": "Медиана TCP-рукопожатий с нескольких попыток (рекомендуется)",
     "opt.ping.tcp": "TCP connect",
     "opt.ping.tcp_sub": "Быстрая проверка доступности порта",
     "opt.ping.head": "HTTP HEAD",
@@ -343,11 +354,12 @@ STRINGS = {
     "opt.display.both_sub": "Индикатор и числовое значение",
     "ping.thp_help_title": "Что такое THP?",
     "ping.thp_help_text": (
-        "THP (TCP-HEAD Probe) - своя проверка Socksicle: TCP-подключение "
-        "и HEAD-запрос в одном соединении, без TLS.\n\n"
-        "Итог складывается из времени TCP и взвешенного времени HTTP. "
-        "Узлы Hysteria2 проверяются QUIC-дейтаграммами. "
-        "Проверка идет мимо туннеля, поэтому цифра показывает прямую скорость сервера. "
-        "Если TCP проходит, а HTTP нет, узел считается доступным с пониженной оценкой."
+        "THP (TCP Handshake Probe) - своя проверка Socksicle: несколько TCP-подключений "
+        "к серверу без TLS и без HTTP-запроса.\n\n"
+        "Оценка - медиана успешных TCP-рукопожатий. Если часть попыток прошла, "
+        "узел считается нестабильным; если не прошла ни одна - недоступным. "
+        "Проверка идет мимо туннеля, поэтому цифра показывает прямую задержку до сервера. "
+        "Для Hysteria2 THP не используется: узел проверяется отдельно через QUIC, "
+        "HTTP через туннель или TCP."
     ),
 }

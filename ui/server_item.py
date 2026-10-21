@@ -1,181 +1,21 @@
 import re
+from typing import Optional
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QPushButton, QLabel, QRadioButton,
+    QWidget, QHBoxLayout, QPushButton, QLabel,
     QFrame, QSizePolicy, QDialog, QVBoxLayout
 )
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Property, QRectF, QPointF, QTimer
-from PySide6.QtGui import QColor, QPainter, QBrush, QFont, QPixmap, QPen
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPixmap
 
 from utils.icons import set_button_icon as _set_btn_icon
-from utils.window_utils import configure_window, compositing_available
+from utils.window_utils import configure_window, compositing_available, find_overlay_target
 from utils.i18n import tr
 from .signal_bars_view import SignalBarsView
 from .config_tag_badge import ConfigTagBadge, build_badge_texts
+from .animated_radio_button import AnimatedRadioButton
+from .qr_overlay_dialog import show_server_qr_dialog
 
 _FLAG_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
-
-
-class AnimatedRadioButton(QRadioButton):
-    """Material 3 Card Radio Button with flag squircle, active indicator dot, and host subtitle.
-    
-    Ported 1-to-1 from mobile item_server_node.xml & ServerNodeBinder.kt.
-    """
-
-    def __init__(self, theme, parent=None):
-        super().__init__(parent)
-        self.theme = theme
-        self._show_flags = False
-        self._bg_color = self._compute_bg(checked=False, hovered=False)
-        self._bg_anim = QPropertyAnimation(self, b"bgColor")
-        self._bg_anim.setDuration(200)
-        self._bg_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        self._actions_width = 170
-        self._font_normal = QFont("Segoe UI, Arial, Noto Color Emoji", 9)
-        self._font_bold = QFont("Segoe UI, Arial, Noto Color Emoji", 9)
-        self._font_bold.setWeight(QFont.DemiBold)
-        self._font_sub = QFont("Segoe UI, Arial", 8)
-        self._font_flag = QFont("Segoe UI Emoji, Noto Color Emoji", 11)
-
-        self.flag_emoji = "🌐"
-        self.host_text = ""
-
-        self.setFixedHeight(48)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet(
-            "QRadioButton { border: none; background: transparent; } "
-            "QRadioButton::indicator { width: 0px; height: 0px; }"
-        )
-        self.toggled.connect(lambda _checked: self.refresh_bg())
-
-    # Row colours follow NodeDrawableCache.KIND_CONTAINER on Android:
-    # base = surfaceElevated, active = surfaceElevated blended 12% with the
-    # accent, 14dp radius, accent border when active / muted hairline else.
-    def _compute_bg(self, checked: bool, hovered: bool) -> QColor:
-        theme = self.theme
-        base = QColor(getattr(theme, "surface_container_high",
-                              getattr(theme, "surface_variant", "#2A2018")))
-        if not checked:
-            if hovered:
-                base = QColor(getattr(theme, "surface_container_highest", "#36343B"))
-            return base
-        accent = QColor(getattr(theme, "primary", "#D0BCFF"))
-        blend = 0.18 if hovered else 0.12
-        mixed = QColor(
-            int(base.red() + (accent.red() - base.red()) * blend),
-            int(base.green() + (accent.green() - base.green()) * blend),
-            int(base.blue() + (accent.blue() - base.blue()) * blend),
-            255)
-        if hovered:
-            return mixed.lighter(106)
-        return mixed
-
-    def refresh_bg(self, hovered: bool | None = None):
-        if hovered is None:
-            hovered = self.underMouse()
-        self._animate_bg(self._compute_bg(self.isChecked(), hovered))
-
-    def enterEvent(self, event):
-        self._animate_bg(self._compute_bg(self.isChecked(), True))
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._animate_bg(self._compute_bg(self.isChecked(), False))
-        super().leaveEvent(event)
-
-    def _animate_bg(self, target_color):
-        self._bg_anim.stop()
-        self._bg_anim.setStartValue(self._bg_color)
-        self._bg_anim.setEndValue(target_color)
-        self._bg_anim.start()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
-
-        w = float(self.width())
-        h = float(self.height())
-        is_active = self.isChecked()
-
-        # 1. Container background card (Android: 14dp radius, surfaceElevated)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(self._bg_color))
-        p.drawRoundedRect(QRectF(0, 0, w, h), 14, 14)
-
-        accent_color = QColor(self.theme.primary)
-        muted_color = QColor(getattr(self.theme, "outline", "#938F99"))
-        # Hairline border (muted @ 0x3C) or the accent border when active
-        border_color = accent_color if is_active else QColor(
-            muted_color.red(), muted_color.green(), muted_color.blue(), 0x3C)
-        p.setPen(QPen(border_color, 1.0))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 14, 14)
-
-        # 2. Active Dot Indicator (9x9dp dot on left)
-        dot_cx = 16.0
-        dot_cy = h / 2.0
-        if is_active:
-            # Halo glow
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 50)))
-            p.drawEllipse(QPointF(dot_cx, dot_cy), 7.0, 7.0)
-            # Center dot
-            p.setBrush(QBrush(accent_color))
-            p.drawEllipse(QPointF(dot_cx, dot_cy), 4.5, 4.5)
-        else:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(255, 255, 255, 30)))
-            p.drawEllipse(QPointF(dot_cx, dot_cy), 4.0, 4.0)
-
-        # 3. Squircle Flag Frame (32x32dp) - hidden entirely when flags are
-        # off (mobile ServerNodeBinder.kt hides containerNodeFlag, not just
-        # the glyph, so no empty rounded square stays behind).
-        if self._show_flags:
-            flag_x = 28.0
-            flag_y = (h - 28.0) / 2.0
-            flag_rect = QRectF(flag_x, flag_y, 28.0, 28.0)
-
-            p.setPen(QPen(QColor(147, 143, 153, 40), 1.0))
-            p.setBrush(QBrush(QColor(255, 255, 255, 12)))
-            p.drawRoundedRect(flag_rect, 9, 9)
-
-            p.setFont(self._font_flag)
-            p.setPen(QColor(255, 255, 255))
-            p.drawText(flag_rect, Qt.AlignCenter, self.flag_emoji)
-            text_x = 64.0
-        else:
-            text_x = 28.0
-
-        # 4. Text Details (Name + Host)
-        text_avail_w = max(40.0, w - text_x - self._actions_width - 8.0)
-
-        name_text = self.text()
-        p.setFont(self._font_bold if is_active else self._font_normal)
-        p.setPen(accent_color if is_active else QColor(self.theme.on_surface))
-
-        elided_name = p.fontMetrics().elidedText(name_text, Qt.ElideRight, int(text_avail_w))
-
-        if self.host_text:
-            p.drawText(int(text_x), 5, int(text_avail_w), 20, Qt.AlignVCenter | Qt.AlignLeft, elided_name)
-
-            p.setFont(self._font_sub)
-            muted_color = QColor(getattr(self.theme, "outline", "#938F99"))
-            p.setPen(muted_color)
-            elided_host = p.fontMetrics().elidedText(self.host_text, Qt.ElideRight, int(text_avail_w))
-            p.drawText(int(text_x), 23, int(text_avail_w), 18, Qt.AlignVCenter | Qt.AlignLeft, elided_host)
-        else:
-            p.drawText(int(text_x), 0, int(text_avail_w), int(h), Qt.AlignVCenter | Qt.AlignLeft, elided_name)
-
-    def getBgColor(self):
-        return self._bg_color
-
-    def setBgColor(self, c):
-        self._bg_color = c
-        self.update()
-
-    bgColor = Property(QColor, getBgColor, setBgColor)
 
 
 class ServerItem(QFrame):
@@ -187,9 +27,7 @@ class ServerItem(QFrame):
         self._ping_display_mode = int(ping_display_mode)
         self._last_ping_ms = None
         self._delete_handler = None
-        self._ping_anim = QTimer(self)
-        self._ping_anim.setInterval(300)
-        self._ping_anim.timeout.connect(self._on_ping_anim_tick)
+        self._ping_anim: Optional[QTimer] = None
         self._ping_anim_frame = 0
         self.setStyleSheet("border: none; background: transparent;")
         self.main_layout = QHBoxLayout(self)
@@ -254,6 +92,8 @@ class ServerItem(QFrame):
         self.share_button.hide()
         self.delete_button.hide()
         self._style_actions()
+        self._raw_name = text or ""
+        self._clean_name = text or ""
         self.update_server(text, server, show_flags=show_flags)
         self.setFixedHeight(48)
 
@@ -272,20 +112,20 @@ class ServerItem(QFrame):
         if show_flags is not None:
             self.radio._show_flags = bool(show_flags)
 
-        # Clean display name and extract emoji flag
-        clean_text = text
+        self._raw_name = text or ""
         flag = getattr(server, "flag_emoji", None) if server else None
         if not flag or flag == "🌐":
-            from utils.geo_utils import detect_flag, clean_server_name_and_emoji
+            from utils.geo_utils import detect_flag, extract_name_and_emoji
             host = getattr(server, "host", "") if server else ""
             detected_flag, _ = detect_flag(text, host)
-            clean_text, flag = clean_server_name_and_emoji(text, detected_flag)
+            clean_text, flag = extract_name_and_emoji(text, detected_flag)
         else:
-            from utils.geo_utils import clean_server_name_and_emoji
-            clean_text, _ = clean_server_name_and_emoji(text, flag)
+            from utils.geo_utils import extract_name_and_emoji
+            clean_text, _ = extract_name_and_emoji(text, flag)
 
-        self.radio.setText(clean_text)
+        self._clean_name = clean_text
         self.radio.flag_emoji = flag
+        self._apply_display_name()
 
         if server:
             host = getattr(server, "host", "") or getattr(server, "server", "")
@@ -403,7 +243,8 @@ class ServerItem(QFrame):
     def apply_theme(self, theme):
         self.theme = theme
         self.radio.theme = theme
-        self.radio._bg_anim.stop()
+        if self.radio._bg_anim is not None:
+            self.radio._bg_anim.stop()
         self.radio.setBgColor(self.radio._compute_bg(self.radio.isChecked(), False))
         self.ping_bars.apply_theme(theme)
         self.protocol_badge.apply_theme(theme)
@@ -417,7 +258,7 @@ class ServerItem(QFrame):
         from PySide6.QtWidgets import QMenu
 
         menu = QMenu(self)
-        menu.setAttribute(Qt.WA_TranslucentBackground, compositing_available())
+        menu.setAttribute(Qt.WA_TranslucentBackground, True)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         menu.setStyleSheet(f"""
             QMenu {{
@@ -446,52 +287,12 @@ class ServerItem(QFrame):
 
 
     def show_qr_code(self):
-        if not self.server:
-            return
-        import qrcode
-        qr_img = qrcode.make(self.server.key)
-        img = qr_img.toqimage()
-        d = QDialog(self)
-        d.setWindowFlags(Qt.Dialog)
-        configure_window(d)
-
-        container = QFrame(d)
-        container.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.theme.surface_container_high};
-                border-radius: 28px;
-                border: none;
-                outline: none;
-            }}
-        """)
-        lay = QVBoxLayout(container)
-        lay.setContentsMargins(24, 24, 24, 24)
-
-        title = QLabel(self.server.name if self.server else tr("item.qr_title"))
-        title.setStyleSheet(f"color: {self.theme.on_surface}; font-weight: bold; font-size: 16px; margin-bottom: 8px; border: none;")
-        title.setAlignment(Qt.AlignCenter)
-        lay.addWidget(title)
-
-        lbl = QLabel()
-        lbl.setPixmap(QPixmap.fromImage(img).scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(lbl)
-
-        close_btn = QPushButton(tr("dlg.close"))
-        close_btn.setFocusPolicy(Qt.NoFocus)
-        close_btn.setStyleSheet(self.theme.get_button_style("tonal"))
-        close_btn.clicked.connect(d.accept)
-        lay.addWidget(close_btn)
-
-        d_lay = QVBoxLayout(d)
-        d_lay.setContentsMargins(12, 12, 12, 12)
-        d_lay.addWidget(container)
-        d.exec()
+        show_server_qr_dialog(self.server, self.theme, self)
 
     def set_ping(self, ms):
         self.stop_ping_animation()
         self._last_ping_ms = ms
-        ok_color = getattr(self.theme, "success", "#4CAF50")
+        ok_color = getattr(self.theme, "primary", "#D0BCFF")
         warn_color = getattr(self.theme, "warning", "#FFC107")
         err_color = getattr(self.theme, "error", "#F44336")
 
@@ -524,7 +325,7 @@ class ServerItem(QFrame):
         self._recompute_actions_width()
 
     def is_ping_animating(self) -> bool:
-        return self._ping_anim.isActive()
+        return self._ping_anim is not None and self._ping_anim.isActive()
 
     def start_ping_animation(self):
         """Show a lightweight busy indicator until set_ping() delivers a result.
@@ -550,12 +351,16 @@ class ServerItem(QFrame):
             self.ping_bars.show()
         else:
             self.ping_bars.hide()
+        if self._ping_anim is None:
+            self._ping_anim = QTimer(self)
+            self._ping_anim.setInterval(300)
+            self._ping_anim.timeout.connect(self._on_ping_anim_tick)
         if not self._ping_anim.isActive():
             self._ping_anim.start()
         self._recompute_actions_width()
 
     def stop_ping_animation(self):
-        if self._ping_anim.isActive():
+        if self._ping_anim is not None and self._ping_anim.isActive():
             self._ping_anim.stop()
 
     def _on_ping_anim_tick(self):
@@ -584,9 +389,15 @@ class ServerItem(QFrame):
             self._apply_ping_visibility()
         self._recompute_actions_width()
 
+    def _apply_display_name(self):
+        """Use clean name when the flag tile is visible; keep full name with emoji otherwise."""
+        display_name = self._clean_name if self.radio._show_flags else self._raw_name
+        self.radio.setText(display_name)
+
     def set_show_flags(self, show: bool):
         """Show or hide the country flag tile (mobile showFlags parity)."""
         self.radio._show_flags = bool(show)
+        self._apply_display_name()
         self.radio.update()
 
     def resizeEvent(self, event):

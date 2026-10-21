@@ -1,4 +1,4 @@
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu
 
@@ -23,12 +23,16 @@ class TrayManager(QObject):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon(self.icon_path))
         self.tray_menu = QMenu()
+        self.tray_menu.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.tray_menu.setWindowFlags(self.tray_menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.apply_theme(self.theme)
 
         self.show_action = self.tray_menu.addAction(tr("tray.show_hide"))
         self.show_action.triggered.connect(self.showHideRequested)
 
         self.servers_menu = self.tray_menu.addMenu(tr("tray.servers"))
+        self.servers_menu.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.servers_menu.setWindowFlags(self.servers_menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.tray_menu.addSeparator()
 
         self.disconnect_action = self.tray_menu.addAction(tr("tray.disconnect"))
@@ -103,6 +107,11 @@ class TrayManager(QObject):
         self.tray_icon.showMessage(title, message, QIcon(self.icon_path), 3000)
 
     def show(self):
+        self.tray_icon.show()
+
+    def restore(self):
+        """Re-add the icon after Explorer recreated the notification area."""
+        self.tray_icon.hide()
         self.tray_icon.show()
 
     def hide(self):

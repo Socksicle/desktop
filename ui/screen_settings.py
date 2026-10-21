@@ -16,14 +16,20 @@ from .settings_options import (
     ENGINE_IDS,
     ENGINE_OPTIONS,
     LANGUAGE_OPTIONS,
+    MUX_OPTIONS,
     PING_DISPLAY_OPTIONS,
     PING_METHOD_OPTIONS,
     PING_TIMEOUT_DEFAULT,
     PING_TIMEOUT_MAX,
     PING_TIMEOUT_MIN,
-    RENDER_OPTIONS,
+    THEME_SPEC_OPTIONS,
     THEME_SWATCHES,
     USER_AGENT_OPTIONS,
+)
+from utils.engines.singbox_config import (
+    MUX_DEFAULT_PROTOCOL,
+    MUX_MAX_CONNECTIONS_DEFAULT,
+    MUX_MAX_CONNECTIONS_LIMIT,
 )
 from utils.i18n import tr
 from utils.startup_utils import is_autostart_enabled, set_autostart
@@ -31,20 +37,32 @@ from utils import icons
 from utils.window_utils import compositing_available
 
 
+# Persistent cache of dynamic theme quadrant colors across screen transitions
+_CACHED_DYNAMIC_SWATCH_COLORS: list[str] = []
+
+
 class ThemeSwatchButton(QWidget):
     """Circular/squircle color swatch button for Material 3 theme palette selection."""
     clicked = Signal(str)
 
-    def __init__(self, key: str, name: str, color_hex: str, is_dynamic: bool = False, parent=None):
+    def __init__(self, key: str, name: str, color_hex: str, is_dynamic: bool = False, dynamic_colors: list[str] | None = None, parent=None):
         super().__init__(parent)
         self.key = key
         self.name = name
         self.color_hex = color_hex
         self.is_dynamic = is_dynamic
+        self.dynamic_colors = list(dynamic_colors) if dynamic_colors else list(_CACHED_DYNAMIC_SWATCH_COLORS)
         self._selected = False
         self.setFixedSize(38, 38)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(name)
+
+    def set_dynamic_colors(self, colors: list[str]):
+        if colors and self.dynamic_colors != colors:
+            self.dynamic_colors = list(colors)
+            global _CACHED_DYNAMIC_SWATCH_COLORS
+            _CACHED_DYNAMIC_SWATCH_COLORS = list(colors)
+            self.update()
 
     def set_selected(self, selected: bool):
         if self._selected != selected:
@@ -75,7 +93,12 @@ class ThemeSwatchButton(QWidget):
 
         if self.is_dynamic:
             p.setPen(Qt.NoPen)
-            colors = [QColor("#4BA3E3"), QColor("#D0BCFF"), QColor("#4CAF50"), QColor("#E2703C")]
+            if self.dynamic_colors and len(self.dynamic_colors) >= 4:
+                colors = [QColor(c) for c in self.dynamic_colors[:4]]
+            elif _CACHED_DYNAMIC_SWATCH_COLORS and len(_CACHED_DYNAMIC_SWATCH_COLORS) >= 4:
+                colors = [QColor(c) for c in _CACHED_DYNAMIC_SWATCH_COLORS[:4]]
+            else:
+                colors = [QColor("#CCC2DC"), QColor("#D0BCFF"), QColor("#EFB8C8"), QColor("#4A4458")]
             for i, c in enumerate(colors):
                 p.setBrush(QBrush(c))
                 p.drawPie(int(cx - r), int(cy - r), int(r * 2), int(r * 2), i * 90 * 16, 90 * 16)
@@ -420,6 +443,29 @@ class OptionCardGroup(QWidget):
             card.apply_theme(theme)
 
 
+class _SettingsComboBox(QComboBox):
+    """QComboBox whose popup window is frameless and 100% transparent outside the item view."""
+
+    def showPopup(self):
+        view = self.view()
+        popup_win = view.window()
+        popup_win.setObjectName("comboPopupContainer")
+        popup_win.setAttribute(Qt.WA_TranslucentBackground, True)
+        popup_win.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup_win.setStyleSheet("#comboPopupContainer { background: transparent; border: none; }")
+        pal = popup_win.palette()
+        pal.setColor(QPalette.Window, Qt.transparent)
+        pal.setColor(QPalette.Base, Qt.transparent)
+        popup_win.setPalette(pal)
+        if isinstance(popup_win, QFrame):
+            popup_win.setFrameShape(QFrame.NoFrame)
+            popup_win.setLineWidth(0)
+        if popup_win.layout():
+            popup_win.layout().setContentsMargins(0, 0, 0, 0)
+            popup_win.layout().setSpacing(0)
+        super().showPopup()
+
+
 class SettingsScreen(QWidget):
     """Full-page Material 3 Settings view matching Android MainSettingsDelegate.kt."""
 
@@ -438,18 +484,22 @@ class SettingsScreen(QWidget):
         # hundreds of widgets. Builders fill these in; until then they stay
         # None and apply_theme() skips them.
         self._built_sections = set()
+        self.theme_spec_combo = None
         self.sw_amoled = None
         self.sw_invert_scroll = None
         self.sw_show_server_card = None
         self.sw_show_ip_card = None
         self.sw_show_flags = None
-        self.render_combo = None
-        self.lbl_render_hint = None
         self.engine_combo = None
         self.sw_tun = None
         self.sw_killswitch = None
         self.sw_hy2_insecure = None
         self.sw_block_udp = None
+        self.sw_tls_fragment = None
+        self.sw_mux = None
+        self.mux_settings = None
+        self.mux_protocol_combo = None
+        self.mux_max_conn_spin = None
         self.dns_combo = None
         self.edit_custom_dns = None
         self.ua_combo = None
@@ -527,6 +577,15 @@ class SettingsScreen(QWidget):
         self.hub_row_connection.clicked.connect(lambda: self.open_section("connection", tr("set.hub_connection")))
         net_layout.addWidget(self.hub_row_connection)
 
+        self.hub_row_tunnel = HubRow(
+            "hub_tunnel", tr("set.hub_tunnel"),
+            tr("set.hub_tunnel_sub"),
+            self.theme, self.group_network,
+            position="middle", role="primary"
+        )
+        self.hub_row_tunnel.clicked.connect(lambda: self.open_section("tunnel", tr("set.hub_tunnel")))
+        net_layout.addWidget(self.hub_row_tunnel)
+
         self.hub_row_ping = HubRow(
             "hub_ping", tr("set.hub_ping"),
             tr("set.hub_ping_sub"),
@@ -587,6 +646,9 @@ class SettingsScreen(QWidget):
         self.card_connection = self._create_card(tr("set.hub_connection"))
         self.content_layout.addWidget(self.card_connection)
 
+        self.card_tunnel = self._create_card(tr("set.hub_tunnel"))
+        self.content_layout.addWidget(self.card_tunnel)
+
         self.card_ping = self._create_card(tr("set.hub_ping"))
         self.content_layout.addWidget(self.card_ping)
 
@@ -614,6 +676,27 @@ class SettingsScreen(QWidget):
         self._built_sections.add(section_name)
         self.apply_theme(self.theme)
 
+    def _get_dynamic_swatch_colors(self, theme=None) -> list[str]:
+        global _CACHED_DYNAMIC_SWATCH_COLORS
+        t = theme if (theme is not None and getattr(theme, "preset_key", "") == "dynamic") else getattr(self, "theme", None)
+        if t is not None and getattr(t, "preset_key", "") == "dynamic" and hasattr(t, "get_swatch_quadrant_colors"):
+            cols = t.get_swatch_quadrant_colors()
+            if cols and len(cols) >= 4:
+                _CACHED_DYNAMIC_SWATCH_COLORS = list(cols)
+                return cols
+        if _CACHED_DYNAMIC_SWATCH_COLORS and len(_CACHED_DYNAMIC_SWATCH_COLORS) >= 4:
+            return list(_CACHED_DYNAMIC_SWATCH_COLORS)
+        try:
+            from utils.theme import M3Theme
+            dyn = M3Theme("dynamic")
+            cols = dyn.get_swatch_quadrant_colors()
+            if cols and len(cols) >= 4:
+                _CACHED_DYNAMIC_SWATCH_COLORS = list(cols)
+                return cols
+        except Exception:
+            pass
+        return ["#CCC2DC", "#D0BCFF", "#EFB8C8", "#4A4458"]
+
     def _build_appearance(self):
         app_layout = QVBoxLayout(self.card_appearance)
         app_layout.setContentsMargins(16, 16, 16, 16)
@@ -623,10 +706,15 @@ class SettingsScreen(QWidget):
         swatch_layout.setSpacing(10)
 
         current_theme = self.settings.get("theme_preset", "dynamic")
+        dyn_colors = self._get_dynamic_swatch_colors()
         for idx, (key, label_key, color, is_dyn) in enumerate(THEME_SWATCHES):
             if key == "custom":
                 color = self._custom_color_hex(color)
-            btn = ThemeSwatchButton(key, tr(label_key), color, is_dynamic=is_dyn)
+            btn = ThemeSwatchButton(
+                key, tr(label_key), color,
+                is_dynamic=is_dyn,
+                dynamic_colors=dyn_colors if is_dyn else None
+            )
             btn.set_selected(key == current_theme)
             btn.clicked.connect(self._on_swatch_clicked)
             swatch_layout.addWidget(btn)
@@ -641,6 +729,14 @@ class SettingsScreen(QWidget):
 
         swatch_layout.addStretch()
         app_layout.addLayout(swatch_layout)
+
+        self.theme_spec_combo = self._add_combo_row(
+            app_layout,
+            tr("set.theme_spec"),
+            [(val, tr(label_key)) for val, label_key in THEME_SPEC_OPTIONS],
+            self.settings.get("theme_spec", "2021"),
+        )
+        self.theme_spec_combo.currentIndexChanged.connect(self._on_theme_spec_changed)
 
         self.sw_amoled = self._add_toggle_row(
             app_layout,
@@ -684,19 +780,6 @@ class SettingsScreen(QWidget):
             visible=False,
         )
         self.sw_show_flags.toggled.connect(lambda s: self._emit_setting("show_flags", s))
-
-        self.render_combo = self._add_combo_row(
-            app_layout,
-            tr("set.render_label"),
-            [(val, tr(label_key)) for val, label_key in RENDER_OPTIONS],
-            self.settings.get("render_backend", "auto")
-        )
-        self.render_combo.currentIndexChanged.connect(self._on_render_changed)
-
-        self.lbl_render_hint = QLabel(tr("set.restart_hint"))
-        self.lbl_render_hint.setStyleSheet("font-size: 11px; color: #938F99; background: transparent;")
-        self.lbl_render_hint.setWordWrap(True)
-        app_layout.addWidget(self.lbl_render_hint)
 
         self.lang_combo = self._add_combo_row(
             app_layout,
@@ -773,14 +856,6 @@ class SettingsScreen(QWidget):
         )
         self.sw_hy2_insecure.toggled.connect(lambda s: self._emit_setting("hy2_insecure", bool(s)))
 
-        self.sw_block_udp = self._add_toggle_row(
-            conn_layout,
-            tr("set.blockudp"),
-            tr("set.blockudp_sub"),
-            bool(self.settings.get("block_udp", False))
-        )
-        self.sw_block_udp.toggled.connect(lambda s: self._emit_setting("block_udp", bool(s)))
-
         current_provider = self.settings.get("dns_provider", "system")
 
         self.dns_combo = self._add_combo_row(
@@ -799,6 +874,97 @@ class SettingsScreen(QWidget):
         self.edit_custom_dns.textChanged.connect(self._on_custom_dns_changed)
         self.edit_custom_dns.setVisible(current_provider == "custom")
         conn_layout.addWidget(self.edit_custom_dns)
+
+    def _build_tunnel(self):
+        tunnel_layout = QVBoxLayout(self.card_tunnel)
+        tunnel_layout.setContentsMargins(16, 16, 16, 16)
+        tunnel_layout.setSpacing(14)
+
+        self.sw_block_udp = self._add_toggle_row(
+            tunnel_layout,
+            tr("set.blockudp"),
+            tr("set.blockudp_sub"),
+            bool(self.settings.get("block_udp", False))
+        )
+        self.sw_block_udp.toggled.connect(lambda s: self._emit_setting("block_udp", bool(s)))
+
+        self.sw_tls_fragment = self._add_toggle_row(
+            tunnel_layout,
+            tr("set.fragmentation"),
+            tr("set.fragmentation_sub"),
+            bool(self.settings.get("tls_fragment", False))
+        )
+        self.sw_tls_fragment.toggled.connect(
+            lambda s: self._emit_setting("tls_fragment", bool(s)))
+
+        self.sw_mux = self._add_toggle_row(
+            tunnel_layout,
+            tr("set.mux"),
+            tr("set.mux_sub"),
+            bool(self.settings.get("mux_enabled", False))
+        )
+        self.sw_mux.toggled.connect(self._on_mux_toggled)
+
+        self.mux_settings = QWidget()
+        self.mux_settings.setStyleSheet("background: transparent; border: none;")
+        mux_layout = QVBoxLayout(self.mux_settings)
+        mux_layout.setContentsMargins(0, 0, 0, 0)
+        mux_layout.setSpacing(14)
+
+        self.mux_protocol_combo = self._add_combo_row(
+            mux_layout,
+            tr("set.mux_protocol"),
+            [(val, tr(label_key)) for val, label_key in MUX_OPTIONS],
+            self.settings.get("mux_protocol", MUX_DEFAULT_PROTOCOL)
+        )
+        self.mux_protocol_combo.currentIndexChanged.connect(
+            self._on_mux_protocol_changed)
+
+        mux_max_row = QHBoxLayout()
+        mux_max_row.setSpacing(12)
+        mux_max_labels = QVBoxLayout()
+        mux_max_labels.setSpacing(2)
+        mux_max_title = QLabel(tr("set.mux_max_conn"))
+        mux_max_title.setStyleSheet(
+            "font-size: 13.5px; font-weight: bold; background: transparent;")
+        mux_max_sub = QLabel(tr("set.mux_max_conn_sub"))
+        mux_max_sub.setStyleSheet(
+            "font-size: 11px; color: #938F99; background: transparent;")
+        mux_max_sub.setWordWrap(True)
+        mux_max_labels.addWidget(mux_max_title)
+        mux_max_labels.addWidget(mux_max_sub)
+        mux_max_row.addLayout(mux_max_labels, 1)
+
+        self.mux_max_conn_spin = QSpinBox()
+        self.mux_max_conn_spin.setRange(1, MUX_MAX_CONNECTIONS_LIMIT)
+        self.mux_max_conn_spin.setValue(self._mux_max_connections())
+        self.mux_max_conn_spin.setFixedWidth(90)
+        self.mux_max_conn_spin.setFixedHeight(38)
+        self.mux_max_conn_spin.valueChanged.connect(
+            lambda v: self._emit_setting("mux_max_connections", int(v)))
+        mux_max_row.addWidget(self.mux_max_conn_spin)
+        mux_layout.addLayout(mux_max_row)
+
+        self.mux_settings.setVisible(
+            bool(self.settings.get("mux_enabled", False)))
+        tunnel_layout.addWidget(self.mux_settings)
+
+    def _mux_max_connections(self) -> int:
+        try:
+            value = int(self.settings.get(
+                "mux_max_connections", MUX_MAX_CONNECTIONS_DEFAULT))
+        except (TypeError, ValueError):
+            value = MUX_MAX_CONNECTIONS_DEFAULT
+        return max(1, min(MUX_MAX_CONNECTIONS_LIMIT, value))
+
+    def _on_mux_toggled(self, enabled: bool):
+        self.mux_settings.setVisible(bool(enabled))
+        self._emit_setting("mux_enabled", bool(enabled))
+
+    def _on_mux_protocol_changed(self, idx: int):
+        val = self.mux_protocol_combo.itemData(idx)
+        if val:
+            self._emit_setting("mux_protocol", val)
 
     def _build_subs(self):
         subs_layout = QVBoxLayout(self.card_subs)
@@ -955,6 +1121,7 @@ class SettingsScreen(QWidget):
         self.card_hub.show()
         self.card_appearance.hide()
         self.card_connection.hide()
+        self.card_tunnel.hide()
         self.card_ping.hide()
         self.card_subs.hide()
         self.card_system.hide()
@@ -970,6 +1137,7 @@ class SettingsScreen(QWidget):
         self.card_hub.hide()
         self.card_appearance.setVisible(section_name == "appearance")
         self.card_connection.setVisible(section_name == "connection")
+        self.card_tunnel.setVisible(section_name == "tunnel")
         self.card_ping.setVisible(section_name == "ping")
         self.card_subs.setVisible(section_name == "subs")
         self.card_system.setVisible(section_name == "system")
@@ -991,6 +1159,7 @@ class SettingsScreen(QWidget):
 
     def _add_toggle_row(self, parent_layout: QVBoxLayout, title: str, subtitle: str, checked: bool, visible: bool = True) -> AnimatedToggleSwitch:
         row_widget = QWidget()
+        row_widget.setStyleSheet("border: none; background: transparent;")
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
@@ -998,13 +1167,13 @@ class SettingsScreen(QWidget):
         lbl_box.setSpacing(2)
 
         t_lbl = QLabel(title)
-        t_lbl.setStyleSheet("font-size: 13.5px; font-weight: bold; background: transparent;")
+        t_lbl.setStyleSheet("font-size: 13.5px; font-weight: bold; background: transparent; border: none;")
         t_lbl.setWordWrap(True)
         lbl_box.addWidget(t_lbl)
 
         if subtitle:
             s_lbl = QLabel(subtitle)
-            s_lbl.setStyleSheet("font-size: 11px; color: #938F99; background: transparent;")
+            s_lbl.setStyleSheet("font-size: 11px; color: #938F99; background: transparent; border: none;")
             s_lbl.setWordWrap(True)
             lbl_box.addWidget(s_lbl)
 
@@ -1079,12 +1248,21 @@ class SettingsScreen(QWidget):
                 {SettingsScreen._arrow_rule("arrow_drop_down", accent_hex)}
                 margin-right: 8px;
             }}
+            #comboPopupContainer {{
+                background: transparent;
+                border: none;
+            }}
+            QComboBoxPrivateContainer {{
+                background: transparent;
+                border: none;
+            }}
             QComboBox QAbstractItemView {{
                 background-color: {surface_high};
                 color: {text_hex};
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 14px;
                 padding: 6px;
+                margin: 0px;
                 outline: none;
                 selection-background-color: transparent;
             }}
@@ -1129,6 +1307,22 @@ class SettingsScreen(QWidget):
         t = theme or self.theme
         if t:
             combo.setStyleSheet(self._combobox_stylesheet(t))
+            view = combo.view()
+            popup_win = view.window()
+            popup_win.setObjectName("comboPopupContainer")
+            popup_win.setAttribute(Qt.WA_TranslucentBackground, True)
+            popup_win.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+            popup_win.setStyleSheet("#comboPopupContainer { background: transparent; border: none; }")
+            pal = popup_win.palette()
+            pal.setColor(QPalette.Window, Qt.transparent)
+            pal.setColor(QPalette.Base, Qt.transparent)
+            popup_win.setPalette(pal)
+            if isinstance(popup_win, QFrame):
+                popup_win.setFrameShape(QFrame.NoFrame)
+                popup_win.setLineWidth(0)
+            if popup_win.layout():
+                popup_win.layout().setContentsMargins(0, 0, 0, 0)
+                popup_win.layout().setSpacing(0)
 
     def _add_combo_row(self, parent_layout: QVBoxLayout, title: str, items: list[tuple[str, str]], current_val: str) -> QComboBox:
         row = QVBoxLayout()
@@ -1138,7 +1332,7 @@ class SettingsScreen(QWidget):
         t_lbl.setStyleSheet("font-size: 12.5px; font-weight: 600; color: #938F99; background: transparent;")
         row.addWidget(t_lbl)
 
-        combo = QComboBox()
+        combo = _SettingsComboBox()
         combo.setFixedHeight(42)
         combo.setCursor(Qt.PointingHandCursor)
 
@@ -1146,10 +1340,6 @@ class SettingsScreen(QWidget):
         view.setMouseTracking(True)
         view.viewport().setAttribute(Qt.WA_Hover, True)
         view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-
-        popup_win = view.window()
-        popup_win.setAttribute(Qt.WA_TranslucentBackground, compositing_available())
-        popup_win.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
 
         self._style_combobox(combo)
 
@@ -1206,6 +1396,13 @@ class SettingsScreen(QWidget):
                 btn.set_selected(btn.key == prev)
             self.themeChanged.emit(prev)
 
+    def _on_theme_spec_changed(self, idx: int):
+        spec = self.theme_spec_combo.itemData(idx)
+        if not spec:
+            return
+        self.settings["theme_spec"] = spec
+        self.themeChanged.emit(self.settings.get("theme_preset", "dynamic"))
+
     def _on_invert_scroll_toggled(self, checked: bool):
         self.scroll_area.set_invert_scroll(checked)
         self._emit_setting("invert_scroll", checked)
@@ -1214,12 +1411,6 @@ class SettingsScreen(QWidget):
         val = self.engine_combo.itemData(idx)
         if val:
             self._emit_setting("engine", val)
-
-    def _on_render_changed(self, idx: int):
-        val = self.render_combo.itemData(idx)
-        if val:
-            from utils.startup_utils import normalize_render_backend
-            self._emit_setting("render_backend", normalize_render_backend(val))
 
     def _on_language_changed(self, idx: int):
         val = self.lang_combo.itemData(idx)
@@ -1287,7 +1478,7 @@ class SettingsScreen(QWidget):
         pm_names = {
             "thp": "THP",
             "tcp_connect": "TCP-Connect",
-            "http_head": "TCP-HEAD",
+            "http_head": "HTTP-HEAD",
         }
         method_str = pm_names.get(pm, pm.upper())
         sec = int(self.settings.get("ping_timeout", PING_TIMEOUT_DEFAULT))
@@ -1329,6 +1520,39 @@ class SettingsScreen(QWidget):
         pal.setColor(QPalette.PlaceholderText, QColor(color))
         edit.setPalette(pal)
 
+    def apply_theme_fast(self, theme):
+        """Fast surface and title update during intermediate transition ticks."""
+        self.theme = theme
+        text_hex = getattr(theme, "on_surface", "#E6E0E9")
+        surface_hex = getattr(theme, "surface_container", getattr(theme, "surface", "#1A1624"))
+        surface_high = getattr(theme, "surface_container_high", "#241F32")
+
+        fast_card_style = (
+            f"QFrame#settingsCard {{ background-color: {surface_hex}; "
+            f"border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.08); }}"
+        )
+        for card in [
+            getattr(self, "card_appearance", None),
+            getattr(self, "card_connection", None),
+            getattr(self, "card_tunnel", None),
+            getattr(self, "card_ping", None),
+            getattr(self, "card_subs", None),
+            getattr(self, "card_system", None),
+        ]:
+            if card is not None and card.isVisible():
+                card.setStyleSheet(fast_card_style)
+
+        if hasattr(self, "title_label") and self.title_label:
+            self.title_label.setStyleSheet(f"color: {text_hex}; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+        if hasattr(self, "btn_back") and self.btn_back:
+            self.btn_back.setStyleSheet(f"background-color: {surface_high}; color: {text_hex}; border: none; border-radius: 18px; font-size: 18px; font-weight: bold;")
+
+        if getattr(theme, "preset_key", "") == "dynamic" and hasattr(theme, "get_swatch_quadrant_colors"):
+            fast_dyn_colors = theme.get_swatch_quadrant_colors()
+            for btn in getattr(self, "_swatches", []):
+                if btn.is_dynamic:
+                    btn.set_dynamic_colors(fast_dyn_colors)
+
     def apply_theme(self, theme):
         self.theme = theme
         accent_hex = getattr(theme, "primary", "#D0BCFF")
@@ -1338,7 +1562,36 @@ class SettingsScreen(QWidget):
         text_hex = getattr(theme, "on_surface", "#E6E0E9")
         muted_hex = getattr(theme, "outline", "#938F99")
 
+        card_style = f"""
+            QFrame#settingsCard {{
+                background-color: {surface_hex};
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            QLabel {{
+                color: {text_hex};
+                border: none;
+                background: transparent;
+            }}
+            QWidget {{
+                border: none;
+            }}
+        """
+        for card in [
+            getattr(self, "card_appearance", None),
+            getattr(self, "card_connection", None),
+            getattr(self, "card_tunnel", None),
+            getattr(self, "card_ping", None),
+            getattr(self, "card_subs", None),
+            getattr(self, "card_system", None),
+        ]:
+            if card is not None:
+                card.setStyleSheet(card_style)
+
         card_qss = f"""
+            QWidget {{
+                border: none;
+            }}
             QFrame#hubContainer {{
                 background-color: transparent;
                 border: none;
@@ -1350,6 +1603,8 @@ class SettingsScreen(QWidget):
             }}
             QLabel {{
                 color: {text_hex};
+                border: none;
+                background: transparent;
             }}
             QLabel#subSectionLabel {{
                 color: {muted_hex};
@@ -1493,16 +1748,21 @@ class SettingsScreen(QWidget):
 
         self._update_hub_live_values()
 
-        for row in [self.hub_row_appearance, self.hub_row_connection, self.hub_row_ping, self.hub_row_subs, self.hub_row_system]:
+        for row in [self.hub_row_appearance, self.hub_row_connection, self.hub_row_tunnel, self.hub_row_ping, self.hub_row_subs, self.hub_row_system]:
             row.apply_theme(theme)
 
         for group in [self.group_ping_methods, self.group_ping_display]:
             if group is not None:
                 group.apply_theme(theme)
 
-        for sw in [self.sw_amoled, self.sw_invert_scroll, self.sw_show_server_card, self.sw_show_ip_card, self.sw_show_flags, self.sw_tun, self.sw_killswitch, self.sw_hy2_insecure, self.sw_block_udp, self.sw_autostart, self.sw_tray, self.sw_auto_update_subs]:
+        for sw in [self.sw_amoled, self.sw_invert_scroll, self.sw_show_server_card, self.sw_show_ip_card, self.sw_show_flags, self.sw_tun, self.sw_killswitch, self.sw_hy2_insecure, self.sw_block_udp, self.sw_tls_fragment, self.sw_mux, self.sw_autostart, self.sw_tray, self.sw_auto_update_subs]:
             if sw is not None:
                 sw.apply_theme(theme)
 
         for cb in self.findChildren(QComboBox):
             self._style_combobox(cb, theme)
+
+        dyn_colors = self._get_dynamic_swatch_colors(theme)
+        for btn in getattr(self, "_swatches", []):
+            if btn.is_dynamic:
+                btn.set_dynamic_colors(dyn_colors)

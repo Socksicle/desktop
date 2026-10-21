@@ -1,12 +1,13 @@
 """Tests for the Material 3 Expressive 2026 Floating Navigation Toolbar, Search, and FAB."""
 
 import pytest
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QEasingCurve
 from PySide6.QtGui import QMouseEvent, QKeyEvent
 
 from ui.floating_button import FloatingButton, FloatingAddButton, FloatingSearchButton
 from ui.taskbar_capsule import TaskbarCapsule
 from ui.taskbar_view import TaskbarView
+from ui.anim_utils import fluid_easing
 from utils.theme import M3Theme
 
 
@@ -241,3 +242,142 @@ def test_taskbar_view_theme_switch(qapp, theme):
     assert tb.capsule.theme == dark_theme
     assert tb.search_btn.theme == dark_theme
     assert tb.fab.theme == dark_theme
+
+
+def test_taskbar_buttons_progress_synchronization(qapp, theme):
+    """Test that buttons_progress animates width, opacity, and layout spacing in sync."""
+    tb = TaskbarView(theme=theme)
+    assert tb.get_buttons_progress() == 1.0
+    assert tb.lay.spacing() == 10
+
+    # Halfway progress
+    tb.set_buttons_progress(0.5)
+    assert abs(tb.search_btn.get_anim_width() - 28.0) < 0.1
+    assert abs(tb.fab.get_anim_width() - 32.0) < 0.1
+    assert tb.lay.spacing() == 5
+    assert not tb.search_btn.isHidden()
+    assert not tb.fab.isHidden()
+
+    # Fully collapsed progress
+    tb.set_buttons_progress(0.0)
+    assert tb.search_btn.get_anim_width() == 0.0
+    assert tb.fab.get_anim_width() == 0.0
+    assert tb.lay.spacing() == 0
+    assert tb.search_btn.isHidden()
+    assert tb.fab.isHidden()
+
+
+def test_taskbar_smooth_tab_transition_no_staircase(qapp, theme):
+    """Verify that transition to Settings reduces spacing to 0 and avoids staircase hitch."""
+    tb = TaskbarView(theme=theme)
+    tb.select_tab(1, animated=False)
+    assert tb._selected_tab == 1
+    assert tb.get_buttons_progress() == 0.0
+    assert tb.lay.spacing() == 0
+    assert tb.search_btn.isHidden()
+    assert tb.fab.isHidden()
+
+    tb.select_tab(0, animated=False)
+    assert tb._selected_tab == 0
+    assert tb.get_buttons_progress() == 1.0
+    assert tb.lay.spacing() == 10
+    assert not tb.search_btn.isHidden()
+    assert not tb.fab.isHidden()
+
+
+def test_capsule_search_progress_sliding_and_clipping(qapp, theme):
+    """Verify that search_widget preserves slide-in geometry and staggered cross-fade."""
+    capsule = TaskbarCapsule(theme=theme)
+    # At p <= 0.35: icons fade out and search widget stays hidden to prevent overlap
+    capsule.set_search_progress(0.2)
+    assert not capsule.search_widget.isVisible()
+    assert capsule.search_opacity_effect.opacity() == 0.0
+
+    # At p = 0.5: width is 217, search_widget anchored at 0, search fades in with smoothstep
+    capsule.set_search_progress(0.5)
+    expected_w = int(round(184 + (250 - 184) * 0.5))
+    assert capsule.width() == expected_w
+    assert capsule.search_widget.x() == 0
+    assert capsule.search_widget.width() == expected_w
+    assert not capsule.search_widget.isHidden()
+    t = (0.5 - 0.35) / 0.65
+    assert capsule.search_opacity_effect.opacity() == pytest.approx(t * t * (3.0 - 2.0 * t))
+
+    # At p = 1.0: width is 250, search_widget x is 0
+    capsule.set_search_progress(1.0)
+    assert capsule.width() == 250
+    assert capsule.search_widget.x() == 0
+    assert capsule.search_opacity_effect.opacity() == 1.0
+
+    # At p = 0.0: collapsed and hidden
+    capsule.set_search_progress(0.0)
+    assert capsule.width() == 184
+    assert not capsule.search_widget.isVisible()
+
+
+def test_taskbar_search_and_icons_never_overlap(qapp, theme):
+    """Verify that search widget and navigation icons are strictly non-overlapping."""
+    capsule = TaskbarCapsule(theme=theme)
+    for step in range(21):
+        p = step / 20.0
+        capsule.set_search_progress(p)
+        search_visible = not capsule.search_widget.isHidden() and capsule.search_opacity_effect.opacity() > 0.001
+        icons_visible = p < capsule._FADE_SPLIT and (1.0 - (p / capsule._FADE_SPLIT)) > 0.001
+        # It is impossible for both search and icons to be visible simultaneously
+        assert not (search_visible and icons_visible), f"Overlap detected at p={p}"
+
+
+def test_capsule_search_anim_smooth_properties(qapp, theme, monkeypatch):
+    """Verify that search animation uses smooth monotonic fluid_easing and 240ms duration."""
+    capsule = TaskbarCapsule(theme=theme)
+    assert capsule._search_anim.duration() == 240
+    assert capsule._search_anim.easingCurve() == fluid_easing()
+
+    focused = False
+    def _mock_focus():
+        nonlocal focused
+        focused = True
+
+    monkeypatch.setattr(capsule.search_input, "setFocus", _mock_focus)
+
+    # When opening without animation, focus is set immediately
+    capsule.set_search_mode(True, animated=False)
+    assert focused
+    assert capsule._search_open
+
+    # When closing without animation, search is closed
+    capsule.set_search_mode(False, animated=False)
+    assert not capsule._search_open
+
+
+def test_taskbar_search_progress_preserves_spacing(qapp, theme):
+    """Verify that morphing the search button keeps spacing stable at 10px."""
+    tb = TaskbarView(theme=theme)
+    assert tb.lay.spacing() == 10
+    tb._on_search_progress(0.5)
+    assert tb.lay.spacing() == 10
+    assert not tb.search_btn.isHidden()
+    tb._on_search_progress(1.0)
+    assert tb.lay.spacing() == 10
+    assert tb.search_btn.isHidden()
+
+
+def test_taskbar_search_progress_maintains_constant_width(qapp, theme):
+    """Verify that throughout the entire search transition, toolbar width remains exactly 324px."""
+    tb = TaskbarView(theme=theme)
+    assert tb.width() == 324
+
+    for step in range(21):
+        p = step / 20.0
+        tb.capsule.set_search_progress(p)
+        tb._on_search_progress(p)
+        tb.lay.activate()
+        assert tb.width() == 324
+        assert tb.capsule.x() == 0
+        assert tb.fab.x() == 260
+        assert tb.fab.width() == 64
+
+
+
+
+

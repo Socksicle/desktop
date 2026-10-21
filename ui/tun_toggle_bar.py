@@ -1,9 +1,8 @@
 """Compact TUN-mode switch badge for the hero row, styled after ServerFilterBar."""
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, Property, QRectF
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, Property, QRectF, QEasingCurve, QTimer
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QFont
 
-from .anim_utils import fluid_easing
 from utils.i18n import tr
 
 
@@ -35,12 +34,28 @@ class TunToggleBar(QWidget):
         self.setCursor(Qt.PointingHandCursor)
 
         self._anim = QPropertyAnimation(self, b"indicator_x")
-        self._anim.setDuration(220)
-        self._anim.setEasingCurve(fluid_easing())
+        self._anim.setDuration(240)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         if theme:
             self.apply_theme(theme)
         self._snap_indicator()
+
+    def _blend_color(self, c1: QColor, c2: QColor, factor: float) -> QColor:
+        f = max(0.0, min(1.0, factor))
+        r = int(c1.red() + (c2.red() - c1.red()) * f)
+        g = int(c1.green() + (c2.green() - c1.green()) * f)
+        b = int(c1.blue() + (c2.blue() - c1.blue()) * f)
+        a = int(c1.alpha() + (c2.alpha() - c1.alpha()) * f)
+        return QColor(r, g, b, a)
+
+    def _current_progress(self) -> float:
+        pad_h = 4.0
+        tw = self._tab_width()
+        if tw <= 0:
+            return 1.0 if self._checked else 0.0
+        p = (self._indicator_x - pad_h) / tw
+        return max(0.0, min(1.0, p))
 
     def get_indicator_x(self) -> float:
         return self._indicator_x
@@ -86,6 +101,11 @@ class TunToggleBar(QWidget):
     def _tab_width(self) -> float:
         return (self.width() - 8.0) / len(self.labels)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._anim.state() != QPropertyAnimation.Running:
+            self._snap_indicator()
+
     def set_checked(self, checked: bool, animated: bool = True):
         """Set state without emitting toggled (used for sync from settings)."""
         if self._checked == bool(checked):
@@ -104,9 +124,10 @@ class TunToggleBar(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._checked = not self._checked
+            target = self._indicator_x_for(self._checked)
             self._anim.stop()
             self._anim.setStartValue(self._indicator_x)
-            self._anim.setEndValue(self._indicator_x_for(self._checked))
+            self._anim.setEndValue(target)
             self._anim.start()
             self.toggled.emit(self._checked)
             event.accept()
@@ -133,21 +154,29 @@ class TunToggleBar(QWidget):
         ind_h = h - (pad_v * 2.0)
         ind_r = ind_h / 2.0
 
+        p = self._current_progress()
+
+        # Smoothly blend the indicator pill color from off (dark) to on (accent)
+        ind_color = self._blend_color(self._color_off_indicator, self._color_on_indicator, p)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(self._color_on_indicator if self._checked
-                                else self._color_off_indicator))
+        painter.setBrush(QBrush(ind_color))
         painter.drawRoundedRect(QRectF(self._indicator_x, pad_v, tw, ind_h), ind_r, ind_r)
 
         font = QFont("Segoe UI")
         font.setPixelSize(10)
-        for i, text in enumerate(self.labels):
-            tab_rect = QRectF(4.0 + (i * tw), 0, tw, h)
-            is_active = (i == (1 if self._checked else 0))
-            font.setBold(is_active)
-            painter.setFont(font)
-            if is_active:
-                painter.setPen(self._color_on_text if self._checked
-                               else self._color_off_text)
-            else:
-                painter.setPen(self._color_muted_text)
-            painter.drawText(tab_rect, Qt.AlignCenter, text)
+
+        # Tab 0: "Выкл"
+        rect_0 = QRectF(4.0, 0, tw, h)
+        font.setBold(p < 0.5)
+        painter.setFont(font)
+        color_0 = self._blend_color(self._color_muted_text, self._color_off_text, 1.0 - p)
+        painter.setPen(color_0)
+        painter.drawText(rect_0, Qt.AlignCenter, self.labels[0])
+
+        # Tab 1: "TUN"
+        rect_1 = QRectF(4.0 + tw, 0, tw, h)
+        font.setBold(p >= 0.5)
+        painter.setFont(font)
+        color_1 = self._blend_color(self._color_muted_text, self._color_on_text, p)
+        painter.setPen(color_1)
+        painter.drawText(rect_1, Qt.AlignCenter, self.labels[1])
