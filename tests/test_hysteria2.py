@@ -1,11 +1,9 @@
 """Tests for Hysteria 2 protocol link parsing and sing-box config generation."""
-import json
 import unittest
-
 import pytest
 
 from utils.server_model import Server, ProxyProtocol
-from utils.link_parser import parse_link, _parse_hysteria2
+from utils.link_parser import parse_link
 from utils.engines.singbox_engine import SingBoxEngine
 from utils.engines.singbox_config import _generate_config
 from utils.engines.singbox_outbounds import _build_singbox_hysteria2_outbound
@@ -18,69 +16,38 @@ def _qapp_available(qapp):
 
 class TestHysteria2LinkParser(unittest.TestCase):
 
-    def test_parse_basic_hysteria2(self):
-        link = "hysteria2://secret123@hy2.example.com:443#MyHy2Server"
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.protocol, ProxyProtocol.HYSTERIA2)
-        self.assertEqual(server.host, "hy2.example.com")
-        self.assertEqual(server.port, 443)
-        self.assertEqual(server.password, "secret123")
-        self.assertEqual(server.name, "MyHy2Server")
-
-    def test_parse_hy2_short_scheme(self):
-        link = "hy2://my-password@198.51.100.1:8443#ShortScheme"
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.protocol, ProxyProtocol.HYSTERIA2)
-        self.assertEqual(server.host, "198.51.100.1")
-        self.assertEqual(server.port, 8443)
-        self.assertEqual(server.password, "my-password")
-        self.assertEqual(server.name, "ShortScheme")
-
-    def test_parse_with_all_parameters(self):
-        link = (
-            "hysteria2://p%40ssw0rd@hy2.node.com:443"
-            "?sni=custom.sni.com&insecure=1&obfs=salamander&obfs-password=obfspass"
-            "&mport=443,10000-20000&up=50mbps&down=100mbps#FullFeatured"
-        )
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.protocol, ProxyProtocol.HYSTERIA2)
-        self.assertEqual(server.password, "p@ssw0rd")
-        self.assertEqual(server.server_name, "custom.sni.com")
-        self.assertTrue(server.insecure)
-        self.assertEqual(server.obfs, "salamander")
-        self.assertEqual(server.obfs_password, "obfspass")
-        self.assertEqual(server.ports, "443,10000-20000")
-        self.assertEqual(server.up_mbps, 50)
-        self.assertEqual(server.down_mbps, 100)
-        self.assertEqual(server.name, "FullFeatured")
-
-    def test_parse_ipv6_host(self):
-        link = "hysteria2://pass@[2001:db8::1]:8443?sni=ipv6.com#IPv6Server"
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.host, "2001:db8::1")
-        self.assertEqual(server.port, 8443)
-
-    def test_parse_no_password(self):
-        link = "hy2://node.example.com:443#NoPass"
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.password, "")
-        self.assertEqual(server.host, "node.example.com")
-        self.assertEqual(server.port, 443)
-
-    def test_parse_auth_query_param(self):
-        link = "hy2://node.example.com:443?auth=secret-pass&peer=custom.peer.com#AuthParam"
-        server = parse_link(link)
-        self.assertIsNotNone(server)
-        self.assertEqual(server.password, "secret-pass")
-        self.assertEqual(server.server_name, "custom.peer.com")
-        self.assertEqual(server.host, "node.example.com")
-
-
+    def test_parse_hysteria2_variants(self):
+        cases = [
+            (
+                "hysteria2://secret123@hy2.example.com:443#MyHy2Server",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "hy2.example.com", "port": 443, "password": "secret123", "name": "MyHy2Server"},
+            ),
+            (
+                "hy2://my-password@198.51.100.1:8443#ShortScheme",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "198.51.100.1", "port": 8443, "password": "my-password", "name": "ShortScheme"},
+            ),
+            (
+                "hysteria2://p%40ssw0rd@hy2.node.com:443?sni=custom.sni.com&insecure=1&obfs=salamander&obfs-password=obfspass&mport=443,10000-20000&up=50mbps&down=100mbps#FullFeatured",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "hy2.node.com", "port": 443, "password": "p@ssw0rd", "server_name": "custom.sni.com", "insecure": True, "obfs": "salamander", "obfs_password": "obfspass", "ports": "443,10000-20000", "up_mbps": 50, "down_mbps": 100, "name": "FullFeatured"},
+            ),
+            (
+                "hysteria2://pass@[2001:db8::1]:8443?sni=ipv6.com#IPv6Server",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "2001:db8::1", "port": 8443, "password": "pass", "server_name": "ipv6.com", "name": "IPv6Server"},
+            ),
+            (
+                "hy2://node.example.com:443#NoPass",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "node.example.com", "port": 443, "password": "", "name": "NoPass"},
+            ),
+            (
+                "hy2://node.example.com:443?auth=secret-pass&peer=custom.peer.com#AuthParam",
+                {"protocol": ProxyProtocol.HYSTERIA2, "host": "node.example.com", "port": 443, "password": "secret-pass", "server_name": "custom.peer.com", "name": "AuthParam"},
+            ),
+        ]
+        for link, expected in cases:
+            srv = parse_link(link)
+            self.assertIsNotNone(srv, link)
+            for attr, val in expected.items():
+                self.assertEqual(getattr(srv, attr), val, f"{attr} mismatch for {link}")
 
     def test_server_from_dict_and_to_dict(self):
         s1 = Server(
@@ -123,7 +90,8 @@ class TestHysteria2LinkParser(unittest.TestCase):
 
 class TestSingBoxHysteria2Config(unittest.TestCase):
 
-    def test_hysteria2_outbound_basic(self):
+    def test_hysteria2_outbound_variants(self):
+        # Basic with insecure=True
         server = Server(
             protocol=ProxyProtocol.HYSTERIA2,
             host="hy2.server.com",
@@ -143,15 +111,26 @@ class TestSingBoxHysteria2Config(unittest.TestCase):
         self.assertNotIn("obfs", ob)
         self.assertNotIn("server_ports", ob)
 
-    def test_hysteria2_explicit_insecure_false(self):
+        # Insecure=False
         link = "hy2://secret@hy2.server.com:443?insecure=0#Strict"
-        server = parse_link(link)
-        self.assertFalse(server.insecure)
-        ob = _build_singbox_hysteria2_outbound(server)
-        self.assertNotIn("insecure", ob["tls"])
+        server_strict = parse_link(link)
+        self.assertFalse(server_strict.insecure)
+        ob_strict = _build_singbox_hysteria2_outbound(server_strict)
+        self.assertNotIn("insecure", ob_strict["tls"])
 
-    def test_hysteria2_outbound_with_obfs_and_ports(self):
-        server = Server(
+        # A certificate pin must not disable TLS verification
+        server_pinned = Server(
+            protocol=ProxyProtocol.HYSTERIA2,
+            host="hy2.server.com",
+            port=443,
+            password="secretpassword",
+            pinned_peer_cert_sha256="08:1E:1A",
+        )
+        ob_pinned = _build_singbox_hysteria2_outbound(server_pinned)
+        self.assertNotIn("insecure", ob_pinned["tls"])
+
+        # With obfs and port ranges
+        server_full = Server(
             protocol=ProxyProtocol.HYSTERIA2,
             host="hy2.server.com",
             port=443,
@@ -164,15 +143,15 @@ class TestSingBoxHysteria2Config(unittest.TestCase):
             up_mbps=100,
             down_mbps=200,
         )
-        ob = _build_singbox_hysteria2_outbound(server)
-        self.assertEqual(ob["type"], "hysteria2")
-        self.assertEqual(ob["server_ports"], ["443:443", "20000:30000"])
-        self.assertEqual(ob["up_mbps"], 100)
-        self.assertEqual(ob["down_mbps"], 200)
-        self.assertEqual(ob["obfs"], {"type": "salamander", "password": "obfspassword123"})
-        self.assertTrue(ob["tls"]["insecure"])
+        ob_full = _build_singbox_hysteria2_outbound(server_full)
+        self.assertEqual(ob_full["server_ports"], ["443:443", "20000:30000"])
+        self.assertEqual(ob_full["up_mbps"], 100)
+        self.assertEqual(ob_full["down_mbps"], 200)
+        self.assertEqual(ob_full["obfs"], {"type": "salamander", "password": "obfspassword123"})
+        self.assertTrue(ob_full["tls"]["insecure"])
 
-    def test_hysteria2_server_ports_accepts_colon_ranges(self):
+    def test_hysteria2_server_ports_validation(self):
+        # Valid port ranges
         server = Server(
             protocol=ProxyProtocol.HYSTERIA2,
             host="hy2.server.com",
@@ -183,48 +162,25 @@ class TestSingBoxHysteria2Config(unittest.TestCase):
         ob = _build_singbox_hysteria2_outbound(server)
         self.assertEqual(ob["server_ports"], ["10000:20000", "443:443"])
 
-    def test_hysteria2_invalid_server_ports_raise(self):
+        # Invalid port formats raise ValueError
         for ports in ("abc", "10000-", "-10000", "70000", "20000-10000", "1-2-3"):
-            server = Server(
-                protocol=ProxyProtocol.HYSTERIA2,
-                host="hy2.server.com",
-                port=443,
-                password="pw",
-                ports=ports,
-            )
+            srv = Server(protocol=ProxyProtocol.HYSTERIA2, host="hy2.server.com", port=443, password="pw", ports=ports)
             with self.assertRaises(ValueError, msg=ports):
-                _build_singbox_hysteria2_outbound(server)
+                _build_singbox_hysteria2_outbound(srv)
 
-    def test_hysteria2_obfs_password_only_defaults_to_salamander(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="hy2.server.com",
-            port=443,
-            password="pw",
-            obfs_password="obfspassword",
-        )
+    def test_hysteria2_obfs_validation(self):
+        # Password only defaults to salamander
+        server = Server(protocol=ProxyProtocol.HYSTERIA2, host="hy2.server.com", port=443, password="pw", obfs_password="obfspassword")
         ob = _build_singbox_hysteria2_outbound(server)
         self.assertEqual(ob["obfs"], {"type": "salamander", "password": "obfspassword"})
 
-    def test_hysteria2_unknown_obfs_raises(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="hy2.server.com",
-            port=443,
-            password="pw",
-            obfs="rot13",
-            obfs_password="obfspassword",
-        )
+        # Unknown obfs type raises ValueError
+        server_bad = Server(protocol=ProxyProtocol.HYSTERIA2, host="hy2.server.com", port=443, password="pw", obfs="rot13", obfs_password="obfspassword")
         with self.assertRaises(ValueError):
-            _build_singbox_hysteria2_outbound(server)
+            _build_singbox_hysteria2_outbound(server_bad)
 
-    def test_generate_full_config(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="1.2.3.4",
-            port=8443,
-            password="auth",
-        )
+    def test_generate_full_config_and_strict_defaults(self):
+        server = Server(protocol=ProxyProtocol.HYSTERIA2, host="1.2.3.4", port=8443, password="auth")
         cfg = _generate_config(server, 1080)
         self.assertEqual(cfg["inbounds"][0]["type"], "mixed")
         self.assertEqual(cfg["inbounds"][0]["listen_port"], 1080)
@@ -232,38 +188,15 @@ class TestSingBoxHysteria2Config(unittest.TestCase):
         self.assertEqual(cfg["outbounds"][0]["server"], "1.2.3.4")
         self.assertEqual(cfg["outbounds"][0]["server_port"], 8443)
         self.assertEqual(cfg["route"]["final"], "proxy")
-
-    def test_hysteria2_strict_by_default(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="hy2.server.com",
-            port=443,
-            password="secretpassword",
-        )
-        ob = _build_singbox_hysteria2_outbound(server)
-        self.assertNotIn("insecure", ob["tls"])
-        cfg = _generate_config(server, 1080)
+        # Strict by default: no insecure flag
         self.assertNotIn("insecure", cfg["outbounds"][0]["tls"])
 
-    def test_hysteria2_global_opt_in_sets_insecure(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="hy2.server.com",
-            port=443,
-            password="secretpassword",
-        )
-        ob = _build_singbox_hysteria2_outbound(server, allow_insecure=True)
-        self.assertTrue(ob["tls"]["insecure"])
-        cfg = _generate_config(server, 1080, hy2_insecure=True)
-        self.assertTrue(cfg["outbounds"][0]["tls"]["insecure"])
+        # Opt-in insecure
+        cfg_insecure = _generate_config(server, 1080, hy2_insecure=True)
+        self.assertTrue(cfg_insecure["outbounds"][0]["tls"]["insecure"])
 
-    def test_engine_build_config_propagates_hy2_insecure(self):
-        server = Server(
-            protocol=ProxyProtocol.HYSTERIA2,
-            host="hy2.server.com",
-            port=443,
-            password="secretpassword",
-        )
+    def test_engine_propagation_and_cert_hint(self):
+        server = Server(protocol=ProxyProtocol.HYSTERIA2, host="hy2.server.com", port=443, password="secretpassword")
         engine = SingBoxEngine()
         engine.local_port = 1080
         self.assertFalse(engine.hy2_insecure)
@@ -271,8 +204,6 @@ class TestSingBoxHysteria2Config(unittest.TestCase):
         engine.hy2_insecure = True
         self.assertTrue(engine.build_config(server)["outbounds"][0]["tls"]["insecure"])
 
-    def test_tls_cert_failure_hint(self):
-        engine = SingBoxEngine()
         line = ("ERROR [3820420302 8.21s] dns: exchange failed for google.com. "
                 "IN A: CRYPTO_ERROR 0x12a (local): tls: failed to verify "
                 "certificate: x509: certificate signed by unknown authority")

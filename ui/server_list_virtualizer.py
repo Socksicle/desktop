@@ -45,6 +45,7 @@ class WidgetPool:
 def create_or_update_group_card(group: dict, card: Optional[GroupHeaderCard], theme, panel) -> GroupHeaderCard:
     """Create a new GroupHeaderCard or update an existing detached one."""
     gkey = group.get("key", "")
+    is_pinned = bool(group.get("is_pinned", False))
     if card is None:
         card = GroupHeaderCard(
             key=gkey,
@@ -52,12 +53,17 @@ def create_or_update_group_card(group: dict, card: Optional[GroupHeaderCard], th
             icon=group.get("icon", "🌐"),
             subtitle=group.get("subtitle", ""),
             is_direct=group.get("is_direct", False),
+            is_pinned=is_pinned,
             theme=theme,
         )
         card.collapseToggled.connect(panel.groupCollapseToggled.emit)
         card.pingGroupRequested.connect(panel.groupPingRequested.emit)
         card.refreshRequested.connect(panel.groupRefreshRequested.emit)
         card.editRequested.connect(panel.groupEditRequested.emit)
+        if hasattr(panel, "groupPinToggled"):
+            card.pinToggled.connect(panel.groupPinToggled.emit)
+        if hasattr(panel, "groupDeleteRequested"):
+            card.deleteRequested.connect(panel.groupDeleteRequested.emit)
     else:
         card.key = gkey
         card.update_group(
@@ -65,6 +71,7 @@ def create_or_update_group_card(group: dict, card: Optional[GroupHeaderCard], th
             group.get("icon", "🌐"),
             group.get("subtitle", ""),
             bool(group.get("is_direct", False)),
+            is_pinned=is_pinned,
         )
     return card
 

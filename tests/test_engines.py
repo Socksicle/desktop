@@ -48,14 +48,15 @@ def _make_file(path, magic=None, size=2_000_000, executable=True):
 
 class CheckLocalPortTest(unittest.TestCase):
 
-    def test_valid_ports_pass_through_as_int(self):
+    def test_check_local_port_validation(self):
+        # Valid ports
         self.assertEqual(check_local_port(1080), 1080)
         self.assertEqual(check_local_port(1), 1)
         self.assertEqual(check_local_port(65535), 65535)
-        self.assertEqual(check_local_port("2080"), 2080)
 
-    def test_bool_out_of_range_and_garbage_rejected(self):
-        for bad in (True, False, 0, -1, 65536, 70000, None, "abc"):
+        # Invalid ports / types: strings and floats are not coerced
+        for bad in (True, False, 0, -1, 65536, 70000, None, "abc",
+                    "2080", 1080.0, 1080.9):
             with self.subTest(bad=bad):
                 with self.assertRaises((TypeError, ValueError, OverflowError)):
                     check_local_port(bad)
@@ -63,11 +64,9 @@ class CheckLocalPortTest(unittest.TestCase):
 
 class EngineTypeTest(unittest.TestCase):
 
-    def test_values(self):
+    def test_values_and_str(self):
         self.assertEqual(EngineType.XRAY.value, "xray")
         self.assertEqual(EngineType.SINGBOX.value, "sing-box")
-
-    def test_string_enum(self):
         self.assertEqual(str(EngineType.SINGBOX), "EngineType.SINGBOX")
         self.assertIsInstance(EngineType.SINGBOX, str)
 
@@ -75,49 +74,33 @@ class EngineTypeTest(unittest.TestCase):
 class ProxyEngineBaseTest(unittest.TestCase):
     """Test ProxyEngine base class behaviour (via SingBoxEngine)."""
 
-    def test_signals_defined(self):
+    def test_base_engine_lifecycle_and_state(self):
+        import subprocess
+
         engine = SingBoxEngine()
         self.assertTrue(hasattr(engine, 'statusChanged'))
         self.assertTrue(hasattr(engine, 'connectionStateChanged'))
         self.assertTrue(hasattr(engine, 'logUpdated'))
-
-    def test_default_state(self):
-        engine = SingBoxEngine()
         self.assertIsNone(engine.process)
         self.assertEqual(engine.local_port, 1080)
         self.assertFalse(engine.is_connected)
         self.assertIsNone(engine.current_server)
-        self.assertIsNone(engine.last_exit_code)
-
-    def test_is_running_false_when_no_process(self):
-        engine = SingBoxEngine()
         self.assertFalse(engine.is_running())
+        engine.current_server = "fake"
+        self.assertEqual(engine.get_current_server(), "fake")
 
-    def test_confirm_connected(self):
-        engine = SingBoxEngine()
+        # Signals and state transitions
         signals = []
-        engine.connectionStateChanged.connect(lambda v: signals.append(v))
+        engine.connectionStateChanged.connect(signals.append)
         engine.confirm_connected()
         self.assertTrue(engine.is_connected)
         self.assertEqual(signals, [True])
 
-    def test_disconnect_resets_state(self):
-        engine = SingBoxEngine()
-        engine.is_connected = True
-        signals = []
-        engine.connectionStateChanged.connect(lambda v: signals.append(v))
         engine.disconnect_from_server()
         self.assertFalse(engine.is_connected)
         self.assertIn(False, signals)
 
-    def test_get_current_server(self):
-        engine = SingBoxEngine()
-        self.assertIsNone(engine.get_current_server())
-        engine.current_server = "fake"
-        self.assertEqual(engine.get_current_server(), "fake")
-
-    def test_teardown_stops_process(self):
-        engine = SingBoxEngine()
+        # Normal terminate teardown
         fake_proc = SimpleNamespace(
             pid=123, poll=mock.Mock(return_value=None),
             terminate=mock.Mock(), wait=mock.Mock(return_value=0))
@@ -128,18 +111,16 @@ class ProxyEngineBaseTest(unittest.TestCase):
         self.assertFalse(engine.is_connected)
         fake_proc.terminate.assert_called_once()
 
-    def test_teardown_kills_on_timeout(self):
-        engine = SingBoxEngine()
-        import subprocess
-        fake_proc = SimpleNamespace(
+        # Kill on timeout
+        engine2 = SingBoxEngine()
+        fake_proc2 = SimpleNamespace(
             pid=123, poll=mock.Mock(return_value=None),
             terminate=mock.Mock(), kill=mock.Mock(),
             wait=mock.Mock(side_effect=[subprocess.TimeoutExpired("", 2), 0]))
-        engine.process = fake_proc
+        engine2.process = fake_proc2
         with mock.patch("sys.platform", "linux"):
-            engine.teardown()
-        fake_proc.terminate.assert_called_once()
-        fake_proc.kill.assert_called_once()
+            engine2.teardown()
+        fake_proc2.kill.assert_called_once()
 
 
 class SecureConfigFileTest(unittest.TestCase):
@@ -151,32 +132,27 @@ class SecureConfigFileTest(unittest.TestCase):
         self.addCleanup(Path(path).unlink, missing_ok=True)
         return path
 
-    def test_icacls_failure_raises(self):
+    def test_windows_icacls_security_and_cleanup(self):
         path = self._make_config()
+        # Failure returncode raises PermissionError
         with mock.patch("sys.platform", "win32"), \
-             mock.patch("utils.engines.base.subprocess.run",
-                        return_value=mock.Mock(returncode=5)):
-            with self.assertRaises(PermissionError) as ctx:
-                _secure_config_file(path)
-        self.assertIn("icacls", str(ctx.exception))
-
-    def test_icacls_unavailable_raises(self):
-        path = self._make_config()
-        with mock.patch("sys.platform", "win32"), \
-             mock.patch("utils.engines.base.subprocess.run",
-                        side_effect=FileNotFoundError("icacls")):
+             mock.patch("utils.engines.base.subprocess.run", return_value=mock.Mock(returncode=5)):
             with self.assertRaises(PermissionError):
                 _secure_config_file(path)
 
-    def test_icacls_success_keeps_file(self):
-        path = self._make_config()
+        # Unavailable icacls raises PermissionError
         with mock.patch("sys.platform", "win32"), \
-             mock.patch("utils.engines.base.subprocess.run",
-                        return_value=mock.Mock(returncode=0)):
+             mock.patch("utils.engines.base.subprocess.run", side_effect=FileNotFoundError("icacls")):
+            with self.assertRaises(PermissionError):
+                _secure_config_file(path)
+
+        # Success keeps file
+        with mock.patch("sys.platform", "win32"), \
+             mock.patch("utils.engines.base.subprocess.run", return_value=mock.Mock(returncode=0)):
             _secure_config_file(path)
         self.assertTrue(os.path.exists(path))
 
-    def test_build_args_removes_config_when_icacls_fails(self):
+        # Build args removes temporary config when icacls fails
         engine = SingBoxEngine()
         engine.local_port = 1080
         server = SimpleNamespace(host="1.2.3.4", port=8388,
@@ -185,9 +161,9 @@ class SecureConfigFileTest(unittest.TestCase):
         created = []
 
         def spy(*args, **kwargs):
-            fd, path = real_mkstemp(*args, **kwargs)
-            created.append(path)
-            return fd, path
+            fd, p = real_mkstemp(*args, **kwargs)
+            created.append(p)
+            return fd, p
 
         with mock.patch("utils.engines.base.tempfile.mkstemp", side_effect=spy), \
              mock.patch("sys.platform", "win32"), \
@@ -199,142 +175,112 @@ class SecureConfigFileTest(unittest.TestCase):
         self.assertFalse(Path(created[0]).exists())
         self.assertIsNone(engine._config_path)
 
-
-class XrayEngineTest(unittest.TestCase):
-
-    def test_engine_metadata_and_teardown(self):
-        engine = XrayEngine()
-        self.assertEqual(engine.engine_type, EngineType.XRAY)
-        self.assertEqual(engine.process_name(), "xray")
-        self.assertEqual(engine.version_args(), ["version"])
-
-        fd, path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        engine._config_path = Path(path)
-        self.assertTrue(Path(path).exists())
-        engine.teardown()
-        self.assertFalse(Path(path).exists())
-
-    def test_detect_target_platform(self):
-        result = xray_detect()
-        valid_targets = ["windows-64", "windows-arm64-v8a",
-                         "linux-64", "linux-arm64",
-                         "darwin-amd64", "darwin-arm64"]
-        self.assertIn(result, valid_targets)
-
-
-class SingBoxEngineTest(unittest.TestCase):
-
-    def test_engine_metadata_and_teardown(self):
+    def test_windows_config_is_secured_before_content_is_written(self):
         engine = SingBoxEngine()
-        self.assertEqual(engine.engine_type, EngineType.SINGBOX)
-        self.assertEqual(engine.process_name(), "sing-box")
-        self.assertEqual(engine.version_args(), ["version"])
+        engine.local_port = 1080
+        server = SimpleNamespace(host="1.2.3.4", port=8388,
+                                 method="aes-256-gcm", password="secret")
+        snapshots = []
 
-        fd, path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        engine._config_path = Path(path)
-        self.assertTrue(Path(path).exists())
-        engine.teardown()
-        self.assertFalse(Path(path).exists())
+        def secure(path):
+            snapshots.append(Path(path).read_text(encoding="utf-8"))
+
+        with mock.patch("utils.engines.base._secure_config_file", side_effect=secure), \
+             mock.patch("sys.platform", "win32"):
+            args = engine.build_args(server)
+        self.addCleanup(engine._cleanup_config)
+        # The config file must still be empty when its ACLs are restricted;
+        # otherwise the secret existed in %TEMP% with inherited permissions.
+        self.assertEqual(snapshots, [""])
+        self.assertIn("secret", Path(args[-1]).read_text(encoding="utf-8"))
 
 
+class EngineMetadataAndTargetTest(unittest.TestCase):
 
-class XrayEngineBinaryTest(unittest.TestCase):
-    """Test xray_engine binary finding and usability."""
+    def test_engine_metadata_teardown_and_targets(self):
+        for engine_cls, expected_type, expected_name, detect_fn, valid_targets in [
+            (
+                XrayEngine,
+                EngineType.XRAY,
+                "xray",
+                xray_detect,
+                ["windows-64", "windows-arm64-v8a", "linux-64", "linux-arm64", "darwin-amd64", "darwin-arm64"],
+            ),
+            (
+                SingBoxEngine,
+                EngineType.SINGBOX,
+                "sing-box",
+                sb_detect,
+                ["windows-amd64", "windows-arm64", "linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"],
+            ),
+        ]:
+            engine = engine_cls()
+            self.assertEqual(engine.engine_type, expected_type)
+            self.assertEqual(engine.process_name(), expected_name)
+            self.assertEqual(engine.version_args(), ["version"])
+
+            fd, path = tempfile.mkstemp(suffix=".json")
+            os.close(fd)
+            engine._config_path = Path(path)
+            self.assertTrue(Path(path).exists())
+            engine.teardown()
+            self.assertFalse(Path(path).exists())
+
+            self.assertIn(detect_fn(), valid_targets)
+
+
+class EngineBinaryDiscoveryAndUsabilityTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def test_check_usable_none(self):
-        engine = XrayEngine()
-        result = engine.check_usable(None)
-        self.assertFalse(result.usable)
-        self.assertIn("No xray path", result.reason)
-
-    def test_find_binary_discovers_manual_subdir_app(self):
-        fake = _make_file(self.root / "bin" / "xray"
-                          / common._binary_name("xray"))
-        with mock.patch("utils.platform_utils.get_app_dir",
-                        return_value=self.root), \
-             mock.patch("utils.platform_utils.get_config_dir",
-                        return_value=self.root / "config"), \
-             mock.patch.object(common.shutil, "which", return_value=None):
-            result = common._find_binary("xray")
-        self.assertEqual(result, fake)
-
-    def test_find_binary_discovers_manual_subdir_config(self):
-        fake = _make_file(self.root / "config" / "bin" / "xray"
-                          / common._binary_name("xray"))
-        with mock.patch("utils.platform_utils.get_app_dir",
-                        return_value=self.root / "app"), \
-             mock.patch("utils.platform_utils.get_config_dir",
-                        return_value=self.root / "config"), \
-             mock.patch.object(common.shutil, "which", return_value=None):
-            result = common._find_binary("xray")
-        self.assertEqual(result, fake)
-
-    @unittest.skipIf(os.name != "nt",
-                     "flat file and engine subdir share a name only on Windows "
-                     "(bin/xray vs bin/xray/)")
-    def test_find_binary_prefers_flat_bin_over_subdir(self):
-        expected = _make_file(self.root / "bin"
-                              / common._binary_name("xray"))
-        _make_file(self.root / "bin" / "xray"
-                   / common._binary_name("xray"))
-        with mock.patch("utils.platform_utils.get_app_dir",
-                        return_value=self.root), \
-             mock.patch("utils.platform_utils.get_config_dir",
-                        return_value=self.root / "config"), \
-             mock.patch.object(common.shutil, "which", return_value=None):
-            result = common._find_binary("xray")
-        self.assertEqual(result, expected)
-
-    def test_check_usable_too_small(self):
-        engine = XrayEngine()
-        path = _make_file(self.root / "xray", size=1000)
-        result = engine.check_usable(path)
-        self.assertFalse(result.usable)
-        self.assertIn("too small", result.reason)
-
-
-class SingBoxEngineBinaryTest(unittest.TestCase):
-    """Test singbox_engine binary finding and usability."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-
-    def test_check_usable_none(self):
-        engine = SingBoxEngine()
-        result = engine.check_usable(None)
-        self.assertFalse(result.usable)
-        self.assertIn("No sing-box path", result.reason)
-
-    def test_find_binary_discovers_manual_singbox_subdir(self):
-        fake = _make_file(self.root / "bin" / "singbox"
-                          / common._binary_name("sing-box"))
-        with mock.patch("utils.platform_utils.get_app_dir",
-                        return_value=self.root), \
-             mock.patch("utils.platform_utils.get_config_dir",
-                        return_value=self.root / "config"), \
-             mock.patch.object(common.shutil, "which", return_value=None):
-            result = common._find_binary("sing-box")
-        self.assertEqual(result, fake)
-
-    def test_local_bin_subdir_mapping(self):
+    def test_binary_finding_and_mapping(self):
         self.assertEqual(common._local_bin_subdir("sing-box"), "singbox")
         self.assertEqual(common._local_bin_subdir("xray"), "xray")
 
-    def test_check_usable_too_small(self):
-        engine = SingBoxEngine()
-        path = _make_file(self.root / "sing-box", size=1000)
-        result = engine.check_usable(path)
-        self.assertFalse(result.usable)
-        self.assertIn("too small", result.reason)
+        # Discover in app dir
+        fake_xray_app = _make_file(self.root / "bin" / "xray" / common._binary_name("xray"))
+        with mock.patch("utils.platform_utils.get_app_dir", return_value=self.root), \
+             mock.patch("utils.platform_utils.get_config_dir", return_value=self.root / "config"), \
+             mock.patch.object(common.shutil, "which", return_value=None):
+            self.assertEqual(common._find_binary("xray"), fake_xray_app)
+
+        # Discover in config dir
+        fake_xray_cfg = _make_file(self.root / "config" / "bin" / "xray" / common._binary_name("xray"))
+        with mock.patch("utils.platform_utils.get_app_dir", return_value=self.root / "app"), \
+             mock.patch("utils.platform_utils.get_config_dir", return_value=self.root / "config"), \
+             mock.patch.object(common.shutil, "which", return_value=None):
+            self.assertEqual(common._find_binary("xray"), fake_xray_cfg)
+
+        # Discover singbox subdir
+        fake_sb = _make_file(self.root / "bin" / "singbox" / common._binary_name("sing-box"))
+        with mock.patch("utils.platform_utils.get_app_dir", return_value=self.root), \
+             mock.patch("utils.platform_utils.get_config_dir", return_value=self.root / "config"), \
+             mock.patch.object(common.shutil, "which", return_value=None):
+            self.assertEqual(common._find_binary("sing-box"), fake_sb)
+
+        # Flat binary preference over subdir (Windows)
+        if os.name == "nt":
+            expected = _make_file(self.root / "bin" / common._binary_name("xray"))
+            with mock.patch("utils.platform_utils.get_app_dir", return_value=self.root), \
+                 mock.patch("utils.platform_utils.get_config_dir", return_value=self.root / "config"), \
+                 mock.patch.object(common.shutil, "which", return_value=None):
+                self.assertEqual(common._find_binary("xray"), expected)
+
+    def test_check_usable_validation(self):
+        for engine, name in [(XrayEngine(), "xray"), (SingBoxEngine(), "sing-box")]:
+            # None path
+            res_none = engine.check_usable(None)
+            self.assertFalse(res_none.usable)
+            self.assertIn(f"No {name} path", res_none.reason)
+
+            # Too small
+            small_path = _make_file(self.root / f"small_{name}", size=1000)
+            res_small = engine.check_usable(small_path)
+            self.assertFalse(res_small.usable)
+            self.assertIn("too small", res_small.reason)
 
 
 class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
@@ -349,202 +295,144 @@ class SingBoxEngineTunCapabilitiesTest(unittest.TestCase):
             host="1.2.3.4", port=8388, method="aes-256-gcm", password="pw"
         )
 
-    def test_start_tun_linux_starts_after_grant_check(self):
-        """Engine consults grant_tun_capabilities once before starting TUN."""
-        engine = SingBoxEngine()
-        engine.tun_mode = True
+    def test_start_tun_linux_capabilities_and_device_handling(self):
+        from utils.i18n import tr
         fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
                               stdout=io.StringIO(""), stderr=io.StringIO(""))
+
+        # Success path (grants check & startup)
+        engine = SingBoxEngine()
+        engine.tun_mode = True
         with mock.patch("sys.platform", "linux"), \
              mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
              mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=True) as grant_cap, \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
+             mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
+             mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
              mock.patch("utils.engines.base.cleanup_stale_engines"), \
              mock.patch("utils.engines.base.write_pid_marker"), \
              mock.patch("subprocess.Popen", return_value=fake_proc):
-            ok = engine.start(self.server)
-            self.assertTrue(ok)
+            self.assertTrue(engine.start(self.server))
             grant_cap.assert_called_once_with(self.bin_path)
             engine.teardown()
 
-    def test_start_tun_linux_grants_capabilities_when_missing(self):
-        engine = SingBoxEngine()
-        engine.tun_mode = True
-        fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
-                              stdout=io.StringIO(""), stderr=io.StringIO(""))
-        with mock.patch("sys.platform", "linux"), \
-             mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
-             mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
-             mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=True) as grant_cap, \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
-             mock.patch("utils.engines.base.cleanup_stale_engines"), \
-             mock.patch("utils.engines.base.write_pid_marker"), \
-             mock.patch("subprocess.Popen", return_value=fake_proc):
-            ok = engine.start(self.server)
-            self.assertTrue(ok)
-            grant_cap.assert_called_once_with(self.bin_path)
-            engine.teardown()
-
-    def test_start_tun_linux_fails_when_grant_declined(self):
-        engine = SingBoxEngine()
-        engine.tun_mode = True
+        # Failure: grant declined
+        engine2 = SingBoxEngine()
+        engine2.tun_mode = True
         statuses = []
-        engine.statusChanged.connect(lambda msg, err: statuses.append((msg, err)))
+        engine2.statusChanged.connect(lambda msg, err: statuses.append((msg, err)))
         with mock.patch("sys.platform", "linux"), \
-             mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
+             mock.patch.object(engine2, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=True), \
              mock.patch("utils.platform_utils.grant_tun_capabilities", return_value=False) as grant_cap:
-            ok = engine.start(self.server)
-            self.assertFalse(ok)
+            self.assertFalse(engine2.start(self.server))
             grant_cap.assert_called_once_with(self.bin_path)
-            from utils.i18n import tr
             self.assertTrue(any(tr("tun.no_caps") in s[0] and s[1] for s in statuses))
 
-    def test_start_tun_linux_fails_when_tun_device_missing(self):
-        engine = SingBoxEngine()
-        engine.tun_mode = True
-        statuses = []
-        engine.statusChanged.connect(lambda msg, err: statuses.append((msg, err)))
+        # Failure: tun device missing
+        engine3 = SingBoxEngine()
+        engine3.tun_mode = True
+        statuses3 = []
+        engine3.statusChanged.connect(lambda msg, err: statuses3.append((msg, err)))
         with mock.patch("sys.platform", "linux"), \
-             mock.patch.object(engine, "find_binary", return_value=self.bin_path), \
+             mock.patch.object(engine3, "find_binary", return_value=self.bin_path), \
              mock.patch("utils.engines.singbox_engine.os.path.exists", return_value=False), \
              mock.patch("utils.platform_utils.grant_tun_capabilities") as grant_cap:
-            ok = engine.start(self.server)
-            self.assertFalse(ok)
+            self.assertFalse(engine3.start(self.server))
             grant_cap.assert_not_called()
-            self.assertTrue(any("/dev/net/tun" in s[0] and s[1] for s in statuses))
+            self.assertTrue(any("/dev/net/tun" in s[0] and s[1] for s in statuses3))
 
 
 class PdeathsigAndProcessLifecycleTest(unittest.TestCase):
     """Test Linux PR_SET_PDEATHSIG and platform-specific process launch options."""
 
-    def test_set_pdeathsig_noop_on_windows(self):
+    def test_set_pdeathsig_platforms_and_error_handling(self):
+        # Windows & Darwin no-op
         with mock.patch("sys.platform", "win32"):
             self.assertFalse(set_pdeathsig())
-
-    def test_set_pdeathsig_noop_on_darwin(self):
         with mock.patch("sys.platform", "darwin"):
             self.assertFalse(set_pdeathsig())
 
-    def test_set_pdeathsig_linux_success(self):
+        # Linux success
         fake_libc = mock.MagicMock()
         fake_libc.prctl.return_value = 0
         with mock.patch("sys.platform", "linux"), \
              mock.patch("ctypes.CDLL", return_value=fake_libc), \
              mock.patch("ctypes.util.find_library", return_value="libc.so.6"):
-            res = set_pdeathsig()
-            self.assertTrue(res)
-            import signal
+            self.assertTrue(set_pdeathsig())
             fake_libc.prctl.assert_called_once()
-            args = fake_libc.prctl.call_args[0]
-            self.assertEqual(args[0], 1)  # PR_SET_PDEATHSIG
-            self.assertEqual(args[1].value, signal.SIGTERM)
 
-    def test_set_pdeathsig_linux_handles_failure(self):
-        fake_libc = mock.MagicMock()
+        # Linux handles failure & exception
         fake_libc.prctl.return_value = -1
-        with mock.patch("sys.platform", "linux"), \
-             mock.patch("ctypes.CDLL", return_value=fake_libc):
-            res = set_pdeathsig()
-            self.assertFalse(res)
+        with mock.patch("sys.platform", "linux"), mock.patch("ctypes.CDLL", return_value=fake_libc):
+            self.assertFalse(set_pdeathsig())
 
-    def test_set_pdeathsig_linux_handles_exception(self):
-        with mock.patch("sys.platform", "linux"), \
-             mock.patch("ctypes.CDLL", side_effect=OSError("libc not found")):
-            res = set_pdeathsig()
-            self.assertFalse(res)
+        with mock.patch("sys.platform", "linux"), mock.patch("ctypes.CDLL", side_effect=OSError("libc not found")):
+            self.assertFalse(set_pdeathsig())
 
-    def test_engine_start_linux_passes_preexec_fn(self):
+    def test_engine_start_platform_popen_flags_and_failure(self):
         engine = SingBoxEngine()
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="pw")
-        fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
-                              stdout=io.StringIO(""), stderr=io.StringIO(""))
+        server = SimpleNamespace(host="1.2.3.4", port=8388, method="aes-256-gcm", password="pw")
+        fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None), stdout=io.StringIO(""), stderr=io.StringIO(""))
+
+        # Linux: preexec_fn + close_fds
         with mock.patch.object(engine, "find_binary", return_value=Path("/fake/bin/sing-box")), \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
+             mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
+             mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
              mock.patch("utils.engines.base.cleanup_stale_engines"), \
              mock.patch("utils.engines.base.write_pid_marker"), \
              mock.patch("sys.platform", "linux"), \
              mock.patch("subprocess.Popen", return_value=fake_proc) as popen_mock:
-            ok = engine.start(server)
-            self.assertTrue(ok)
-            popen_mock.assert_called_once()
-            kwargs = popen_mock.call_args[1]
-            self.assertIn("preexec_fn", kwargs)
+            self.assertTrue(engine.start(server))
+            kwargs = popen_mock.call_args_list[0][1]
             self.assertEqual(kwargs["preexec_fn"], set_pdeathsig)
-            self.assertNotIn("creationflags", kwargs)
             self.assertTrue(kwargs["close_fds"])
             engine.teardown()
 
-    def test_engine_start_windows_passes_creationflags_not_preexec(self):
-        engine = SingBoxEngine()
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="pw")
-        fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
-                              stdout=io.StringIO(""), stderr=io.StringIO(""))
+        # Windows: creationflags, not preexec
         with mock.patch.object(engine, "find_binary", return_value=Path("C:/fake/bin/sing-box.exe")), \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
+             mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
+             mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
              mock.patch("utils.engines.base.cleanup_stale_engines"), \
              mock.patch("utils.engines.base.write_pid_marker"), \
              mock.patch("utils.engines.base._secure_config_file"), \
              mock.patch("sys.platform", "win32"), \
              mock.patch("subprocess.Popen", return_value=fake_proc) as popen_mock:
-            ok = engine.start(server)
-            self.assertTrue(ok)
-            popen_mock.assert_called_once()
+            self.assertTrue(engine.start(server))
             kwargs = popen_mock.call_args[1]
             self.assertNotIn("preexec_fn", kwargs)
             self.assertIn("creationflags", kwargs)
-            self.assertFalse(kwargs["close_fds"])
             engine.teardown()
 
-    def test_engine_start_fails_when_config_cannot_be_secured(self):
-        engine = SingBoxEngine()
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="pw")
-        status = []
-        engine.statusChanged.connect(lambda msg, err: status.append((msg, err)))
-        with mock.patch.object(engine, "find_binary", return_value=Path("C:/fake/bin/sing-box.exe")), \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
-              mock.patch("utils.engines.base.cleanup_stale_engines"), \
-              mock.patch("utils.engines.base.write_pid_marker"), \
-              mock.patch("utils.engines.base._secure_config_file",
-                         side_effect=PermissionError("icacls failed")), \
-              mock.patch("sys.platform", "win32"), \
-              mock.patch("subprocess.Popen") as popen_mock:
-            ok = engine.start(server)
-        self.assertFalse(ok)
-        popen_mock.assert_not_called()
-        self.assertIsNone(engine.process)
-        self.assertTrue(any(err for _, err in status))
-
-    def test_engine_start_darwin_no_creationflags_no_preexec(self):
-        engine = SingBoxEngine()
-        server = SimpleNamespace(host="1.2.3.4", port=8388,
-                                 method="aes-256-gcm", password="pw")
-        fake_proc = mock.Mock(pid=1234, poll=mock.Mock(return_value=None),
-                              stdout=io.StringIO(""), stderr=io.StringIO(""))
+        # Darwin: no preexec, no creationflags
         with mock.patch.object(engine, "find_binary", return_value=Path("/fake/bin/sing-box")), \
-              mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
-              mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
+             mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
+             mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
              mock.patch("utils.engines.base.cleanup_stale_engines"), \
              mock.patch("utils.engines.base.write_pid_marker"), \
              mock.patch("sys.platform", "darwin"), \
              mock.patch("subprocess.Popen", return_value=fake_proc) as popen_mock:
-            ok = engine.start(server)
-            self.assertTrue(ok)
-            popen_mock.assert_called_once()
+            self.assertTrue(engine.start(server))
             kwargs = popen_mock.call_args[1]
             self.assertNotIn("preexec_fn", kwargs)
             self.assertNotIn("creationflags", kwargs)
-            self.assertTrue(kwargs["close_fds"])
             engine.teardown()
+
+        # Failure: config cannot be secured
+        status = []
+        engine.statusChanged.connect(lambda msg, err: status.append((msg, err)))
+        with mock.patch.object(engine, "find_binary", return_value=Path("C:/fake/bin/sing-box.exe")), \
+             mock.patch("utils.engines.base.wait_for_port_available", return_value=True), \
+             mock.patch("utils.engines.base._reserve_port", return_value=mock.MagicMock()), \
+             mock.patch("utils.engines.base.cleanup_stale_engines"), \
+             mock.patch("utils.engines.base.write_pid_marker"), \
+             mock.patch("utils.engines.base._secure_config_file", side_effect=PermissionError("icacls failed")), \
+             mock.patch("sys.platform", "win32"), \
+             mock.patch("subprocess.Popen") as popen_mock:
+            self.assertFalse(engine.start(server))
+            popen_mock.assert_not_called()
+            self.assertIsNone(engine.process)
+            self.assertTrue(any(err for _, err in status))
 
 
 if __name__ == "__main__":

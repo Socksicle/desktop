@@ -68,7 +68,9 @@ def _build_xray_stream_settings(server) -> dict:
             tls_settings["fingerprint"] = fp
         alpn = getattr(server, 'alpn', None)
         if alpn:
-            tls_settings["alpn"] = alpn if isinstance(alpn, list) else [alpn]
+            if isinstance(alpn, str):
+                alpn = [p.strip() for p in alpn.split(',') if p.strip()]
+            tls_settings["alpn"] = list(alpn)
         pcs = getattr(server, 'pinned_peer_cert_sha256', '') or getattr(server, 'pcs', '')
         if pcs:
             tls_settings["pinnedPeerCertSha256"] = pcs
@@ -97,6 +99,11 @@ def _build_xray_stream_settings(server) -> dict:
             reality_settings["shortId"] = sid
         if spx:
             reality_settings["spiderX"] = spx
+        alpn = getattr(server, 'alpn', None)
+        if alpn:
+            if isinstance(alpn, str):
+                alpn = [p.strip() for p in alpn.split(',') if p.strip()]
+            reality_settings["alpn"] = list(alpn)
         stream["realitySettings"] = reality_settings
 
     if transport == 'ws':
@@ -270,7 +277,10 @@ def _generate_config(server, local_port, custom_dns=None, block_udp: bool = Fals
         "routing": {
             "domainStrategy": "IPIfNonMatch",
             "rules": [
-                *([{"type": "field", "network": "udp", "outboundTag": "blocked"}] if block_udp else []),
+                *([
+                    {"type": "field", "port": "53", "outboundTag": "proxy"},
+                    {"type": "field", "network": "udp", "outboundTag": "blocked"},
+                ] if block_udp else []),
             ],
         }
     }

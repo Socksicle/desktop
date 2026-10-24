@@ -51,7 +51,7 @@ def is_linux() -> bool:
 @functools.lru_cache(maxsize=1)
 def get_real_app_version() -> str:
     """Retrieve actual application version from pyproject.toml or package metadata."""
-    base_ver = "0.1.1"
+    base_ver = "0.1.2-rc.1"
     for candidate in (get_app_dir() / "pyproject.toml",
                       Path(__file__).resolve().parent.parent / "pyproject.toml",
                       Path.cwd() / "pyproject.toml"):
@@ -138,6 +138,29 @@ def is_admin() -> bool:
     return False
 
 
+def _cleanup_for_restart() -> None:
+    """Release single-instance lock and IPC server before elevating."""
+    try:
+        from PySide6.QtCore import QCoreApplication
+        app = QCoreApplication.instance()
+        if app is not None:
+            if hasattr(app, "_instance_lock") and app._instance_lock is not None:
+                try:
+                    app._instance_lock.unlock()
+                except Exception:
+                    pass
+                app._instance_lock = None
+            app.quit()
+    except Exception:
+        pass
+    try:
+        from utils.single_instance import get_single_instance_name
+        from PySide6.QtNetwork import QLocalServer
+        QLocalServer.removeServer(get_single_instance_name())
+    except Exception:
+        pass
+
+
 def elevate_restart() -> bool:
     """Restart the current application with elevated privileges.
 
@@ -145,14 +168,26 @@ def elevate_restart() -> bool:
     Linux: relaunches as root via pkexec, falling back to sudo.
     Returns False when elevation is not available or fails.
     """
+    args_list = [a for a in sys.argv[1:] if a != "--restarted"]
+    args_list.append("--restarted")
+
     if is_windows():
         try:
             import ctypes
-            params = " ".join(f'"{a}"' for a in sys.argv[1:])
+            params = " ".join(f'"{a}"' for a in args_list)
+            exe = str(sys.executable)
+            app_dir = str(get_app_dir())
+
+            if is_frozen():
+                cmd_params = params
+            else:
+                cmd_params = f'"{sys.argv[0]}" {params}'.strip()
+
             ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, f'"{sys.argv[0]}" {params}'.strip(), None, 1
+                None, "runas", exe, cmd_params, app_dir, 1
             )
             if int(ret) > 32:
+                _cleanup_for_restart()
                 sys.exit(0)
             return False
         except Exception as e:
@@ -161,13 +196,18 @@ def elevate_restart() -> bool:
 
     if is_linux():
         import shutil
-        launcher_args = [sys.executable, sys.argv[0], *sys.argv[1:]]
+        if is_frozen():
+            launcher_args = [sys.executable, *args_list]
+        else:
+            launcher_args = [sys.executable, sys.argv[0], *args_list]
+
         for launcher in ("pkexec", "sudo"):
             if shutil.which(launcher) is None:
                 continue
             try:
-                subprocess.Popen([launcher, *launcher_args])
+                subprocess.Popen([launcher, *launcher_args], cwd=str(get_app_dir()))
                 log.info("Restarting with elevated privileges via %s", launcher)
+                _cleanup_for_restart()
                 sys.exit(0)
             except (OSError, subprocess.SubprocessError) as e:
                 log.warning("Elevation restart failed with %s: %s", launcher, e)

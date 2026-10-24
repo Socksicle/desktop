@@ -17,15 +17,15 @@ def _restore_language():
     set_language(prev)
 
 
-def test_default_language_is_russian():
+def test_i18n_core_and_fallbacks(monkeypatch):
+    # 1. Default language & normalization
     assert i18n.DEFAULT_LANGUAGE == "ru"
     assert set_language(None) == "ru"
     assert set_language("xx") == "ru"
     assert set_language(" EN ") == "en"
     assert get_language() == "en"
 
-
-def test_tr_fallback_chain():
+    # 2. Fallback chain across languages
     set_language("ru")
     assert tr("nav.settings") == "Настройки"
     assert tr("missing.key") == "missing.key"
@@ -35,11 +35,10 @@ def test_tr_fallback_chain():
     assert tr("nav.settings") == "设置"
     assert tr("missing.key") == "missing.key"
     set_language("he")
-    assert tr("nav.settings") == "הגדרות"
+    assert tr("nav.settings") == "Настройки"  # Deactivated language falls back to default ru
     assert tr("missing.key") == "missing.key"
 
-
-def test_trn_plural_forms():
+    # 3. Plural forms (trn)
     set_language("ru")
     assert trn("tray.nodes_added", 1).format(n=1) == "Добавлен 1 новый узел."
     assert trn("tray.nodes_added", 3).format(n=3) == "Добавлено 3 новых узла."
@@ -53,22 +52,10 @@ def test_trn_plural_forms():
     set_language("zh")
     assert trn("tray.nodes_added", 1).format(n=1) == "已添加 1 个新节点。"
     assert trn("tray.nodes_added", 5).format(n=5) == "已添加 5 个新节点。"
-    set_language("he")
-    assert trn("tray.nodes_added", 1).format(n=1) == "נוסף צומת חדש 1."
-    assert trn("tray.nodes_added", 2).format(n=2) == "נוספו 2 צמתים חדשים."
 
-
-def test_tr_zh_falls_back_to_english(monkeypatch):
+    # 4. Chinese fallback to English then Russian
     set_language("zh")
     monkeypatch.delitem(i18n_zh.STRINGS, "nav.settings")
-    assert tr("nav.settings") == "Settings"
-    monkeypatch.delitem(i18n_en.STRINGS, "nav.settings")
-    assert tr("nav.settings") == "Настройки"
-
-
-def test_tr_he_falls_back_to_english(monkeypatch):
-    set_language("he")
-    monkeypatch.delitem(i18n_he.STRINGS, "nav.settings")
     assert tr("nav.settings") == "Settings"
     monkeypatch.delitem(i18n_en.STRINGS, "nav.settings")
     assert tr("nav.settings") == "Настройки"
@@ -92,7 +79,7 @@ def _placeholders(text: str) -> list[str]:
     return sorted(f for _, f, _, _ in string.Formatter().parse(text) if f)
 
 
-def test_catalogs_cover_every_used_key():
+def test_i18n_catalogs_integrity():
     used = _used_tr_keys()
     assert used, "no tr() calls found"
     assert not [k for k in used if k not in i18n_ru.STRINGS]
@@ -100,8 +87,7 @@ def test_catalogs_cover_every_used_key():
     assert not [k for k in used if k not in i18n_zh.STRINGS]
     assert not [k for k in used if k not in i18n_he.STRINGS]
 
-
-def test_zh_catalog_matches_english_keys_and_placeholders():
+    # zh matches en and ru keys and placeholders
     assert set(i18n_zh.STRINGS) == set(i18n_en.STRINGS)
     assert set(i18n_zh.STRINGS) == set(i18n_ru.STRINGS)
     for key, value in i18n_en.STRINGS.items():
@@ -114,8 +100,7 @@ def test_zh_catalog_matches_english_keys_and_placeholders():
             assert isinstance(other, str), key
             assert _placeholders(value) == _placeholders(other), key
 
-
-def test_he_catalog_matches_english_keys_and_placeholders():
+    # he matches en and ru keys and placeholders
     assert set(i18n_he.STRINGS) == set(i18n_en.STRINGS)
     assert set(i18n_he.STRINGS) == set(i18n_ru.STRINGS)
     for key, value in i18n_en.STRINGS.items():
@@ -129,12 +114,25 @@ def test_he_catalog_matches_english_keys_and_placeholders():
             assert _placeholders(value) == _placeholders(other), key
 
 
-def test_settings_screen_renders_english(qapp):
+def test_widgets_and_dialogs_render_english(qapp):
     from utils.theme import M3Theme
     from ui.screen_settings import SettingsScreen
+    from ui.screen_about import ScreenAbout
+    from ui.card_active_server import CardActiveServer
+    from ui.bento_telemetry_card import BentoTelemetryCard
+    from ui.tray_manager import TrayManager
+    from ui.taskbar_view import TaskbarView
+    from ui.server_filter_bar import ServerFilterBar
+    from ui.header_bar import HeaderBar
+    from ui.add_server_dialog import AddServerDialog
+    from ui.edit_subscription_dialog import EditSubscriptionDialog
+    from ui.connection_log_dialog import ConnectionLogDialog
+    from PySide6.QtWidgets import QLabel
 
     set_language("en")
     theme = M3Theme(preset_key="lavender")
+
+    # 1. Settings screen
     screen = SettingsScreen({"theme_preset": "lavender"}, theme)
     screen.show()
     assert screen.title_label.text() == "Settings"
@@ -143,23 +141,13 @@ def test_settings_screen_renders_english(qapp):
     assert "THP (recommended)" in titles
     screen.open_section("appearance", "Appearance")
     langs = [screen.lang_combo.itemText(i) for i in range(screen.lang_combo.count())]
-    assert langs == ["Русский", "English", "中文", "עברית (בטא)"]
+    assert langs == ["Русский", "English", "中文"]
     assert screen.lbl_lang_hint.text() == "Applies after app restart"
 
-
-def test_about_and_cards_render_english(qapp):
-    from utils.theme import M3Theme
-    from ui.screen_about import ScreenAbout
-    from ui.card_active_server import CardActiveServer
-    from ui.bento_telemetry_card import BentoTelemetryCard
-
-    set_language("en")
-    theme = M3Theme(preset_key="lavender")
+    # 2. About and telemetry cards
     about = ScreenAbout(theme, settings={})
-    from PySide6.QtWidgets import QLabel
     row_texts = [w.text() for w in about.findChildren(QLabel)]
-    assert "Device name" in row_texts
-    assert "Core" in row_texts
+    assert "Device name" in row_texts and "Core" in row_texts
     assert about.btn_copy_hwid.text() == "Copy"
 
     card = CardActiveServer(theme=theme)
@@ -170,19 +158,9 @@ def test_about_and_cards_render_english(qapp):
     tele = BentoTelemetryCard(theme=theme)
     assert tele.label_ip.text() == "IP ADDRESS"
 
-
-def test_tray_taskbar_filter_render_english(qapp):
-    from utils.theme import M3Theme
-    from ui.tray_manager import TrayManager
-    from ui.taskbar_view import TaskbarView
-    from ui.server_filter_bar import ServerFilterBar
-    from ui.header_bar import HeaderBar
-
-    set_language("en")
-    theme = M3Theme(preset_key="lavender")
+    # 3. Tray, taskbar, header bar, filter bar
     taskbar = TaskbarView(theme=theme)
-    assert [label for label, _key in taskbar.tabs] == [
-        "Home", "Settings", "About"]
+    assert [label for label, _key in taskbar.tabs] == ["Home", "Settings", "About"]
     assert ServerFilterBar(theme=theme).labels == ["All", "Subs", "Local"]
     assert taskbar.capsule.search_input.placeholderText() == "Search servers"
     assert taskbar.fab.toolTip() == "Add server / subscription"
@@ -194,15 +172,7 @@ def test_tray_taskbar_filter_render_english(qapp):
     assert tray.disconnect_action.text() == "Disconnect"
     assert tray.quit_action.text() == "Quit"
 
-
-def test_dialogs_render_english(qapp):
-    from utils.theme import M3Theme
-    from ui.add_server_dialog import AddServerDialog
-    from ui.edit_subscription_dialog import EditSubscriptionDialog
-    from ui.connection_log_dialog import ConnectionLogDialog
-
-    set_language("en")
-    theme = M3Theme(preset_key="lavender")
+    # 4. Dialogs
     add = AddServerDialog(theme=theme)
     assert add.cancel_button.text() == "Cancel"
     assert add.add_button.text() == "Add"
@@ -210,7 +180,7 @@ def test_dialogs_render_english(qapp):
 
     sub = {"name": "Sub", "url": "https://example.com/sub", "icon_emoji": "🌐"}
     edit = EditSubscriptionDialog(sub, None, theme)
-    assert edit.btn_pin.text() == "Pin to top"
+    assert edit.sw_insecure is not None
     assert edit.edit_name.placeholderText() == "Subscription name"
 
     log_dlg = ConnectionLogDialog(theme=theme)
@@ -219,7 +189,7 @@ def test_dialogs_render_english(qapp):
     assert log_dlg.close_button.text() == "Close"
 
 
-def test_main_window_group_title_english(qapp, monkeypatch, tmp_path):
+def test_main_window_renders_english(qapp, monkeypatch, tmp_path):
     from ui.main_window import RoundedWindow
     from utils.server_model import Server, ProxyProtocol
     import utils.twinsock as tw

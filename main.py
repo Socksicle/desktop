@@ -18,6 +18,8 @@ from utils.startup_utils import (  # noqa: E402
     find_usable_backend,
     initialize,
     install_native_handlers,
+    notify_running_instance,
+    setup_single_instance_server,
     show_already_running,
     show_backend_missing,
 )
@@ -82,6 +84,11 @@ def parse_args(argv=None):
         action="store_true",
         help="Run the sing-box core with full debug logging",
     )
+    parser.add_argument(
+        "--restarted",
+        action="store_true",
+        help="Internal flag indicating application was restarted with elevation",
+    )
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
     return args
 
@@ -96,17 +103,26 @@ def main(argv=None):
 
     # Single-instance guard: refuse a second instance before it can race on
     # local port binds, PID markers, or settings.json writes.
-    instance_lock = acquire_single_instance_lock()
+    # If restarted with elevation, allow up to 2 seconds for the closing parent
+    # process to release the lock file.
+    lock_timeout_ms = 2000 if getattr(args, "restarted", False) else 0
+    instance_lock = acquire_single_instance_lock(timeout_ms=lock_timeout_ms)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Socksicle")
     app.setDesktopFileName(desktop_file_name())
 
     if instance_lock is None:
+        if not args.minimized and notify_running_instance():
+            logging.getLogger("startup").info("Existing instance notified to activate; exiting.")
+            sys.exit(0)
+        if args.minimized:
+            sys.exit(0)
         apply_language_from_settings()
         show_already_running()
         sys.exit(0)
     app._instance_lock = instance_lock  # holds the lock until process exit
+    single_instance_server = setup_single_instance_server(app)
 
     configure_pixmap_cache()
     _apply_platform_style(app)
@@ -124,6 +140,14 @@ def main(argv=None):
 
     window = RoundedWindow()
     install_native_handlers(app, window)
+
+    if single_instance_server is not None:
+        try:
+            single_instance_server.activated.connect(window.show_and_activate)
+            if single_instance_server.activation_requested:
+                window.show_and_activate()
+        except Exception as e:
+            logging.getLogger("startup").debug("Failed to connect single-instance activation: %s", e)
 
     if args.minimized:
         if QSystemTrayIcon.isSystemTrayAvailable():

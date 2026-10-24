@@ -128,6 +128,21 @@ def test_subscription_import_drops_insecure_flag(tmp_path, monkeypatch):
     assert servers[0].insecure is False
 
 
+def test_subscription_pinned_cert_does_not_disable_singbox_tls(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
+    link = "vless://u@1.2.3.4:443?security=tls&pcs=08%3A1E%3A1A#Pinned"
+    monkeypatch.setattr("utils.subscription_manager.parse_subscription",
+                        lambda url, settings: ([link], {}))
+    mgr = SubscriptionManager()
+    assert mgr.add("Sub", "https://example.com/sub") is True
+
+    server = mgr.get("Sub")["servers"][0]
+    assert server.pinned_peer_cert_sha256 == "08:1E:1A"
+
+    from utils.engines.singbox_outbounds import _build_singbox_vless_outbound
+    assert "insecure" not in _build_singbox_vless_outbound(server)["tls"]
+
+
 def test_read_limited_body_chunked():
     read_sizes = []
 
@@ -153,4 +168,90 @@ def test_read_limited_body_chunked():
     resp_big = ChunkedResp(sf.MAX_SUBSCRIPTION_BYTES + 1024)
     with pytest.raises(sf._BlockedSubscription):
         sf._read_limited_body(resp_big)
+
+
+def test_read_limited_body_slowloris_timeout():
+    import time
+
+    class SlowlorisResp:
+        headers = {}
+
+        def __init__(self):
+            self.count = 0
+
+        def read(self, size=-1):
+            self.count += 1
+            time.sleep(0.02)
+            return b"x"
+
+    resp = SlowlorisResp()
+    with pytest.raises(TimeoutError):
+        sf._read_limited_body(resp, timeout=0.05)
+
+
+
+def test_redirect_cross_origin_strips_xhwid(monkeypatch):
+    import socket as std_socket
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(std_socket.AF_INET, std_socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(sf.socket, "getaddrinfo", fake_getaddrinfo)
+    handler = sf._SafeRedirectHandler()
+    req = urllib.request.Request(
+        "https://provider.example/sub",
+        headers={
+            "X-hwid": "secret-device-hwid",
+            "User-Agent": "socksicle-test",
+            "Authorization": "Bearer token",
+            "Cookie": "uid=123",
+        },
+    )
+
+    # Cross-origin redirect to third-party CDN / mirror
+    new_req = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://cdn.mirror.example/download"
+    )
+    assert new_req is not None
+    hdrs = {k.lower(): v for k, v in new_req.headers.items()}
+    assert "x-hwid" not in hdrs
+    assert "authorization" not in hdrs
+    assert "cookie" not in hdrs
+    assert hdrs.get("user-agent") == "socksicle-test"
+
+
+def test_redirect_same_origin_preserves_xhwid(monkeypatch):
+    import socket as std_socket
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(std_socket.AF_INET, std_socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(sf.socket, "getaddrinfo", fake_getaddrinfo)
+    handler = sf._SafeRedirectHandler()
+    req = urllib.request.Request(
+        "https://provider.example/sub",
+        headers={
+            "X-hwid": "secret-device-hwid",
+            "User-Agent": "socksicle-test",
+        },
+    )
+
+    # Same-origin redirect
+    new_req = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://provider.example/sub/v2"
+    )
+    assert new_req is not None
+    hdrs = {k.lower(): v for k, v in new_req.headers.items()}
+    assert hdrs.get("x-hwid") == "secret-device-hwid"
+    assert hdrs.get("user-agent") == "socksicle-test"
+
+
+def test_is_cross_origin():
+    assert not sf._is_cross_origin("https://example.com/a", "https://example.com/b")
+    assert not sf._is_cross_origin("https://example.com:443/a", "https://example.com/b")
+    assert not sf._is_cross_origin("https://EXAMPLE.COM/a", "https://example.com/b")
+    assert sf._is_cross_origin("https://example.com/a", "https://cdn.example.com/a")
+    assert sf._is_cross_origin("https://example.com/a", "https://example.com:8443/a")
+    assert sf._is_cross_origin("https://example.com/a", "http://example.com/a")
+
 

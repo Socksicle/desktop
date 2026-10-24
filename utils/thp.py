@@ -3,6 +3,7 @@ import concurrent.futures
 import logging
 import socket
 import statistics
+import threading
 import time
 import weakref
 from dataclasses import dataclass
@@ -107,13 +108,18 @@ class ThpResult:
 
 
 class Thp:
-    DNS_RESOLVE_CAP_SEC = 0.35
+    DNS_RESOLVE_CAP_SEC = 1.0
     TCP_CONNECT_CAP_SEC = 2.0
     PROBE_ATTEMPTS = 3
     DNS_MAX_WORKERS = 16
+    DNS_TTL_SEC = 60.0
+    DNS_CACHE_MAX = 4096
 
     _dns_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     _loop_sems: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+    _dns_cache: dict[str, tuple[float, list[tuple[int, str]]]] = {}
+    _dns_inflight: dict[str, concurrent.futures.Future] = {}
+    _dns_lock = threading.RLock()
 
     @classmethod
     def _get_dns_executor(cls) -> concurrent.futures.ThreadPoolExecutor:
@@ -132,6 +138,60 @@ class Thp:
             sem = asyncio.Semaphore(cls.DNS_MAX_WORKERS)
             cls._loop_sems[loop] = sem
         return sem
+
+    @classmethod
+    def clear_dns_cache(cls) -> None:
+        """Clear cached DNS resolutions."""
+        with cls._dns_lock:
+            cls._dns_cache.clear()
+
+    @classmethod
+    def _prune_dns_cache(cls, now: float) -> None:
+        expired = [h for h, (exp, _) in cls._dns_cache.items() if exp <= now]
+        for h in expired:
+            cls._dns_cache.pop(h, None)
+        while len(cls._dns_cache) >= cls.DNS_CACHE_MAX:
+            try:
+                first_key = next(iter(cls._dns_cache))
+                cls._dns_cache.pop(first_key, None)
+            except StopIteration:
+                break
+
+    @classmethod
+    def _lookup(cls, host: str) -> list[tuple[int, str]]:
+        addrs = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return cls._extract_ips(addrs)
+
+    @classmethod
+    def _resolve_shared(cls, host: str) -> concurrent.futures.Future:
+        now = time.monotonic()
+        with cls._dns_lock:
+            entry = cls._dns_cache.get(host)
+            if entry is not None and entry[0] > now:
+                ready_f: concurrent.futures.Future = concurrent.futures.Future()
+                ready_f.set_result(entry[1])
+                return ready_f
+
+            if host in cls._dns_inflight:
+                return cls._dns_inflight[host]
+
+            fut = cls._get_dns_executor().submit(cls._lookup, host)
+            cls._dns_inflight[host] = fut
+
+            def _on_done(f: concurrent.futures.Future) -> None:
+                with cls._dns_lock:
+                    cls._dns_inflight.pop(host, None)
+                    try:
+                        res = f.result()
+                        if res:
+                            if len(cls._dns_cache) >= cls.DNS_CACHE_MAX:
+                                cls._prune_dns_cache(time.monotonic())
+                            cls._dns_cache[host] = (time.monotonic() + cls.DNS_TTL_SEC, res)
+                    except Exception:
+                        pass
+
+            fut.add_done_callback(_on_done)
+            return fut
 
     @staticmethod
     def is_ip_literal(host: str) -> bool:
@@ -238,42 +298,59 @@ class Thp:
             fam = socket.AF_INET6 if ":" in clean_host else socket.AF_INET
             candidates = [(fam, clean_host)]
         else:
-            rem_dns_wait = deadline - time.perf_counter()
-            if rem_dns_wait <= 0:
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
-            sem = cls._get_async_dns_sem()
-            try:
-                await asyncio.wait_for(sem.acquire(), timeout=max(0.01, rem_dns_wait))
-            except (asyncio.TimeoutError, TimeoutError):
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout waiting for DNS slot")
+            now = time.monotonic()
+            with cls._dns_lock:
+                entry = cls._dns_cache.get(clean_host)
+                if entry is not None and entry[0] > now:
+                    candidates = entry[1]
+                else:
+                    candidates = None
 
-            loop = asyncio.get_running_loop()
-            fut = cls._get_dns_executor().submit(
-                socket.getaddrinfo, clean_host, port, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
+            if candidates is None:
+                acquired_sem: Optional[asyncio.Semaphore] = None
+                with cls._dns_lock:
+                    is_inflight = clean_host in cls._dns_inflight
 
-            def _release(_f: Any) -> None:
-                if not loop.is_closed():
+                if not is_inflight:
+                    rem_dns_wait = deadline - time.perf_counter()
+                    if rem_dns_wait <= 0:
+                        return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
+                    sem = cls._get_async_dns_sem()
                     try:
-                        loop.call_soon_threadsafe(sem.release)
-                    except RuntimeError:
-                        pass
+                        await asyncio.wait_for(sem.acquire(), timeout=max(0.01, rem_dns_wait))
+                    except (asyncio.TimeoutError, TimeoutError):
+                        return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout waiting for DNS slot")
+                    acquired_sem = sem
 
-            fut.add_done_callback(_release)
+                loop = asyncio.get_running_loop()
+                with cls._dns_lock:
+                    was_inflight = clean_host in cls._dns_inflight
+                    fut = cls._resolve_shared(clean_host)
+                    if acquired_sem is not None:
+                        if was_inflight or fut.done():
+                            acquired_sem.release()
+                        else:
+                            sem_to_release = acquired_sem
+                            def _release(_f: Any) -> None:
+                                if not loop.is_closed():
+                                    try:
+                                        loop.call_soon_threadsafe(sem_to_release.release)
+                                    except RuntimeError:
+                                        pass
+                            fut.add_done_callback(_release)
 
-            try:
-                rem_dns = deadline - time.perf_counter()
-                if rem_dns <= 0:
-                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
-                dns_timeout = min(max(0.05, rem_dns), cls.DNS_RESOLVE_CAP_SEC)
-                addrs = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=dns_timeout)
-                candidates = cls._extract_ips(addrs)
-                if not candidates:
-                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="No IP addresses resolved")
-            except (asyncio.TimeoutError, TimeoutError):
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="DNS timeout")
-            except Exception as e:
-                return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message=f"DNS failed: {e}")
+                try:
+                    rem_dns = deadline - time.perf_counter()
+                    if rem_dns <= 0:
+                        return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="Timeout before DNS")
+                    dns_timeout = min(max(0.05, rem_dns), cls.DNS_RESOLVE_CAP_SEC)
+                    candidates = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=dns_timeout)
+                    if not candidates:
+                        return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="No IP addresses resolved")
+                except (asyncio.TimeoutError, TimeoutError):
+                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message="DNS timeout")
+                except Exception as e:
+                    return ThpResult(host, port, quality=ProbeQuality.FAILED, error_message=f"DNS failed: {e}")
 
         active_candidates = list(candidates)
         rtts: list[float] = []

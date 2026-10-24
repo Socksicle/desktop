@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from utils.platform_utils import get_config_dir, is_windows
+from .win_job import assign_process_to_job, get_engine_job_object
 
 log = logging.getLogger("engine.proc_guard")
 

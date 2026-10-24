@@ -16,6 +16,16 @@ def _default_name(name):
     return name or tr("server.default_name")
 
 
+def _parse_port(val, default=None) -> int | None:
+    if val is None or val == "":
+        return default
+    try:
+        p = int(val)
+        return p if (1 <= p <= 65535 and not isinstance(val, bool)) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_link(raw_link, default_name=None):
     """Parse a vless://, vmess://, hysteria2://, hy2://, trojan://, or tuic:// link into a Server, or None."""
     if not raw_link:
@@ -97,18 +107,15 @@ def _parse_hysteria2(raw_link, default_name=None):
         if hostport.startswith('[') and ']' in hostport:
             host_part, _, port_part = hostport.partition(']')
             host = host_part[1:]
-            if port_part.startswith(':'):
-                port = int(port_part[1:])
-            else:
-                port = 443
+            port = _parse_port(port_part[1:]) if port_part.startswith(':') else 443
         elif ':' in hostport:
             host, port_str = hostport.rsplit(':', 1)
-            port = int(port_str)
+            port = _parse_port(port_str)
         else:
             host = hostport
             port = 443
 
-        if not host:
+        if not host or port is None:
             return None
 
         params = parse_qs(query_str, keep_blank_values=True)
@@ -185,17 +192,14 @@ def _parse_vless(raw_link, default_name=None):
         if hostport.startswith('[') and ']' in hostport:
             host_part, _, port_part = hostport.partition(']')
             host = host_part[1:]
-            if port_part.startswith(':'):
-                port = int(port_part[1:])
-            else:
-                return None
+            port = _parse_port(port_part[1:]) if port_part.startswith(':') else None
         elif ':' in hostport:
             host, port_str = hostport.rsplit(':', 1)
-            port = int(port_str)
+            port = _parse_port(port_str)
         else:
             return None
 
-        if not host:
+        if not host or port is None:
             return None
 
         params = parse_qs(query_str, keep_blank_values=True)
@@ -213,6 +217,9 @@ def _parse_vless(raw_link, default_name=None):
         path = _param('path') or _param('serviceName') or _param('servicename')
         pcs = _param('pcs') or _param('pinSHA256') or _param('pinnedPeerCertSha256') or _param('pinned_peer_cert_sha256')
         pcn = _param('pcn') or _param('vcn') or _param('verifyPeerCertByName') or _param('verify_peer_cert_by_name')
+        xhttp_mode = _param('mode') or _param('xhttp_mode') or 'auto'
+        alpn_str = _param('alpn')
+        alpn = [p.strip() for p in alpn_str.split(',') if p.strip()] if alpn_str else []
 
         is_priv = is_private_host(host)
         if is_priv:
@@ -239,6 +246,8 @@ def _parse_vless(raw_link, default_name=None):
             pinned_peer_cert_sha256=pcs,
             verify_peer_cert_by_name=pcn,
             is_private=is_priv,
+            xhttp_mode=xhttp_mode,
+            alpn=alpn,
         )
     except (ValueError, IndexError) as e:
         log.debug("VLESS link parse failed: %s", e)
@@ -256,7 +265,9 @@ def _parse_vmess(raw_link, default_name=None):
 
         name = data.get('ps', '') or default_name
         host = data.get('add', '')
-        port = int(data.get('port') or 443)
+        port = _parse_port(data.get('port'), default=443)
+        if port is None:
+            return None
         uuid = data.get('id', '')
         alter_id = int(data.get('aid') or 0)
         vmess_sec = data.get('scy', 'auto')
@@ -272,6 +283,14 @@ def _parse_vmess(raw_link, default_name=None):
         is_priv = is_private_host(host)
         if is_priv:
             log.warning("VMess link points to private/reserved IP: %s", host)
+
+        alpn_raw = data.get('alpn', [])
+        if isinstance(alpn_raw, str):
+            alpn = [p.strip() for p in alpn_raw.split(',') if p.strip()]
+        elif isinstance(alpn_raw, list):
+            alpn = [str(p).strip() for p in alpn_raw if str(p).strip()]
+        else:
+            alpn = []
 
         from .server_model import Server, ProxyProtocol
         return Server(
@@ -291,6 +310,7 @@ def _parse_vmess(raw_link, default_name=None):
             path=path,
             host_header=host_header,
             is_private=is_priv,
+            alpn=alpn,
         )
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
         log.debug("VMess link parse failed: %s", e)
@@ -327,18 +347,15 @@ def _parse_trojan(raw_link, default_name=None):
         if hostport.startswith('[') and ']' in hostport:
             host_part, _, port_part = hostport.partition(']')
             host = host_part[1:]
-            if port_part.startswith(':'):
-                port = int(port_part[1:])
-            else:
-                port = 443
+            port = _parse_port(port_part[1:]) if port_part.startswith(':') else 443
         elif ':' in hostport:
             host, port_str = hostport.rsplit(':', 1)
-            port = int(port_str)
+            port = _parse_port(port_str)
         else:
             host = hostport
             port = 443
 
-        if not host:
+        if not host or port is None:
             return None
 
         params = parse_qs(query_str, keep_blank_values=True)
@@ -353,6 +370,8 @@ def _parse_trojan(raw_link, default_name=None):
         path = _param('path')
         pcs = _param('pcs') or _param('pinSHA256') or _param('pinnedPeerCertSha256') or _param('pinned_peer_cert_sha256')
         pcn = _param('pcn') or _param('vcn') or _param('verifyPeerCertByName') or _param('verify_peer_cert_by_name')
+        alpn_str = _param('alpn')
+        alpn = [p.strip() for p in alpn_str.split(',') if p.strip()] if alpn_str else []
         sec_param = _param('security').lower()
         security = sec_param if sec_param else "tls"
         insecure_param = (
@@ -383,6 +402,7 @@ def _parse_trojan(raw_link, default_name=None):
             pinned_peer_cert_sha256=pcs,
             verify_peer_cert_by_name=pcn,
             is_private=is_priv,
+            alpn=alpn,
         )
     except (ValueError, IndexError) as e:
         log.debug("Trojan link parse failed: %s", e)
@@ -422,18 +442,15 @@ def _parse_tuic(raw_link, default_name=None):
         if hostport.startswith('[') and ']' in hostport:
             host_part, _, port_part = hostport.partition(']')
             host = host_part[1:]
-            if port_part.startswith(':'):
-                port = int(port_part[1:])
-            else:
-                port = 8443
+            port = _parse_port(port_part[1:]) if port_part.startswith(':') else 8443
         elif ':' in hostport:
             host, port_str = hostport.rsplit(':', 1)
-            port = int(port_str)
+            port = _parse_port(port_str)
         else:
             host = hostport
             port = 8443
 
-        if not host:
+        if not host or port is None:
             return None
 
         params = parse_qs(query_str, keep_blank_values=True)

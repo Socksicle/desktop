@@ -4,7 +4,7 @@
 
 Socksicle 是一款适用于 Windows 和 Linux 的 Material 3 设计风格桌面代理客户端。它支持配置和管理独立的代理内核（[sing-box](https://github.com/SPlayer/sing-box) 与 [Xray-core](https://github.com/XTLS/Xray-core)），可通过本地 SOCKS5 代理或全局 TUN 虚拟网卡路由网络流量。
 
-> **状态：** 早期开发阶段（`0.1.1`）。可能会遇到问题或产生非兼容性变更。
+> **状态：** 早期开发阶段（`0.1.2-rc.1`）。可能会遇到问题或产生非兼容性变更。
 
 | 主界面 | 设置 | 关于 |
 |:---:|:---:|:---:|

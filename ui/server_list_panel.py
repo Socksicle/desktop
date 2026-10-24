@@ -1,3 +1,5 @@
+import logging
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsOpacityEffect, QButtonGroup, QLabel,
     QSpacerItem, QSizePolicy, QScrollArea,
@@ -12,10 +14,12 @@ from .server_item import ServerItem
 from .group_header_card import GroupHeaderCard
 from .virtual_server_group import VirtualGroup
 from .server_list_virtualizer import ServerListVirtualizer, create_or_update_group_card, WidgetPool
-from utils.ping import AsyncBatchPingJob
+from utils.ping import AsyncBatchPingJob, DEFAULT_PING_CONCURRENCY
 from utils.server_model import server_identity
 from utils.i18n import tr
 from utils.icons import set_label_icon
+
+log = logging.getLogger(__name__)
 
 
 class ServerListPanel(QWidget):
@@ -33,6 +37,8 @@ class ServerListPanel(QWidget):
     groupPingRequested = Signal(str)
     groupRefreshRequested = Signal(str)
     groupEditRequested = Signal(str)
+    groupPinToggled = Signal(str)
+    groupDeleteRequested = Signal(str)
     pingResultReceived = Signal(object, float)
     pingFinished = Signal(str)
 
@@ -52,6 +58,8 @@ class ServerListPanel(QWidget):
         self._last_groups = None
         self._last_connected_key = None
         self._ping_pending: set = set()
+        self._ping_pending_idents: set = set()
+        self._id_to_ident: dict = {}
         self._setup_ui()
         self.apply_theme(theme)
 
@@ -188,8 +196,8 @@ class ServerListPanel(QWidget):
                             try:
                                 if shiboken6.isValid(item):
                                     shiboken6.delete(item)
-                            except Exception:
-                                pass
+                            except (RuntimeError, TypeError) as e:
+                                log.debug("Failed to delete C++ wrapper for layout item: %s", e)
                     del item
 
             pool = WidgetPool(detached_items, detached_cards)
@@ -318,7 +326,7 @@ class ServerListPanel(QWidget):
         last_ms = getattr(server, "_last_ping", None)
         if last_ms is not None:
             item.set_ping(last_ms)
-        elif id(server) in self._ping_pending:
+        elif id(server) in self._ping_pending or server_identity(server) in self._ping_pending_idents:
             item.start_ping_animation()
         is_selected = False
         if connected_server_key and getattr(server, "key", None) == connected_server_key:
@@ -378,7 +386,7 @@ class ServerListPanel(QWidget):
         last_ms = getattr(srv, "_last_ping", None)
         if last_ms is not None:
             item.set_ping(last_ms)
-        elif id(srv) in self._ping_pending:
+        elif id(srv) in self._ping_pending or server_identity(srv) in self._ping_pending_idents:
             item.start_ping_animation()
         is_selected = False
         if self._last_connected_key and getattr(srv, "key", None) == self._last_connected_key:
@@ -433,8 +441,13 @@ class ServerListPanel(QWidget):
 
     @Slot(object, float)
     def _apply_ping_result(self, server_id: int, ms: float):
+        ident = self._id_to_ident.pop(server_id, None)
         self._ping_pending.discard(server_id)
+        if ident:
+            self._ping_pending_idents.discard(ident)
         val = ms if (ms is not None and ms >= 0) else -1.0
+
+        # 1. Try exact object match in rendered items
         for item in self._server_items:
             if id(item.server) == server_id:
                 try:
@@ -443,7 +456,19 @@ class ServerListPanel(QWidget):
                 except RuntimeError:
                     pass
                 return
-        # Row not visible (collapsed group or active filter): keep the
+
+        # 2. If object was replaced (e.g. subscription reload), match by stable identity
+        if ident:
+            for item in self._server_items:
+                if server_identity(item.server) == ident:
+                    try:
+                        setattr(item.server, "_last_ping", val)
+                        item.set_ping(val)
+                    except RuntimeError:
+                        pass
+                    return
+
+        # 3. Row not visible (collapsed group or active filter): keep the
         # result on the model so expanding/clearing the filter shows it.
         for srv in self._last_servers:
             if id(srv) == server_id:
@@ -451,10 +476,20 @@ class ServerListPanel(QWidget):
                     setattr(srv, "_last_ping", val)
                 except (AttributeError, TypeError):
                     pass
-                break
+                return
+
+        if ident:
+            for srv in self._last_servers:
+                if server_identity(srv) == ident:
+                    try:
+                        setattr(srv, "_last_ping", val)
+                    except (AttributeError, TypeError):
+                        pass
+                    return
 
     def ping_all(self, method, socks5_port, servers=None, group_key: str = "",
-                 timeout: float | None = None, url: str | None = None):
+                 timeout: float | None = None, url: str | None = None,
+                 concurrency: int | None = None):
         """Ping ``servers`` in the global thread pool (never blocks the UI).
 
         Starts the per-row busy animation up front; each result stops its
@@ -465,9 +500,13 @@ class ServerListPanel(QWidget):
         if not targets:
             return
         target_ids = {id(s) for s in targets}
+        target_idents = {server_identity(s) for s in targets}
         self._ping_pending.update(target_ids)
+        self._ping_pending_idents.update(target_idents)
+        for s in targets:
+            self._id_to_ident[id(s)] = server_identity(s)
         for item in self._server_items:
-            if id(item.server) in target_ids:
+            if id(item.server) in target_ids or server_identity(item.server) in target_idents:
                 item.start_ping_animation()
         target_keys = [id(s) for s in targets]
         total = len(target_keys)
@@ -489,6 +528,7 @@ class ServerListPanel(QWidget):
             callback=_on_result,
             method=method,
             socks5_port=socks5_port,
+            concurrency=concurrency if concurrency is not None else DEFAULT_PING_CONCURRENCY,
             timeout=timeout,
             url=url,
         )

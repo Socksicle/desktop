@@ -12,12 +12,31 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
 from ..server_model import server_identity
 from ..i18n import tr
-from .base import ProxyEngine, EngineType
+from .base import (
+    ProxyEngine,
+    EngineType,
+    _secure_config_file,
+    set_pdeathsig,
+    CREATE_NO_WINDOW,
+    CREATE_NEW_PROCESS_GROUP,
+)
+from .proc_guard import (
+    assign_process_to_job,
+    write_pid_marker,
+    remove_pid_marker,
+)
+from .linux_death_guard import (
+    start_linux_death_guard,
+    stop_linux_death_guard,
+    LinuxDeathGuard,
+)
 from . import common
 from .singbox_config import (
     MUX_DEFAULT_PROTOCOL,
@@ -162,6 +181,7 @@ class SingBoxEngine(ProxyEngine):
         self.custom_dns = None
         self.hy2_insecure = False
         self.block_udp = False
+        self.bypass_lan = True
         self.tls_fragment = False
         self.mux_enabled = False
         self.mux_protocol = MUX_DEFAULT_PROTOCOL
@@ -171,6 +191,78 @@ class SingBoxEngine(ProxyEngine):
         self._api_port: int | None = None
         self._api_secret: str | None = None
         self._server_tag_map: dict[str, str] = {}
+        self._xray_process = None
+        self._xray_death_guard: LinuxDeathGuard | None = None
+        self._xray_config_path = None
+        self._xray_port: int | None = None
+
+    def _needs_xray_bridge(self, server) -> bool:
+        return (getattr(server, "transport", "") or "").lower() in ("xhttp", "splithttp")
+
+    def _start_xray_bridge(self, server) -> bool:
+        from .xray_engine import _find_binary as find_xray_binary, _generate_config as generate_xray_config
+        xray_bin = find_xray_binary()
+        if not xray_bin:
+            log.error("Xray binary not found for xhttp bridge")
+            return False
+
+        self._xray_port = _find_free_port()
+        cfg = generate_xray_config(
+            server, self._xray_port, custom_dns=self.custom_dns, block_udp=self.block_udp
+        )
+
+        fd, path = tempfile.mkstemp(prefix="xray-sb-bridge-", suffix=".json")
+        os.close(fd)
+        _secure_config_file(path)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        self._xray_config_path = Path(path)
+
+        cmd = [str(xray_bin), "run", "-c", str(path)]
+        popen_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        elif sys.platform.startswith("linux"):
+            popen_kwargs["preexec_fn"] = set_pdeathsig
+        try:
+            self._xray_process = subprocess.Popen(cmd, **popen_kwargs)
+            assign_process_to_job(self._xray_process)
+            self._xray_death_guard = start_linux_death_guard(self._xray_process)
+            write_pid_marker("xray-bridge", self._xray_process.pid, str(xray_bin))
+            time.sleep(0.1)
+            return True
+        except Exception as e:
+            log.error("Failed to start Xray bridge process: %s", e)
+            self._stop_xray_bridge()
+            return False
+
+    def _stop_xray_bridge(self):
+        remove_pid_marker("xray-bridge")
+        if self._xray_death_guard:
+            stop_linux_death_guard(self._xray_death_guard)
+            self._xray_death_guard = None
+        proc = self._xray_process
+        self._xray_process = None
+        self._xray_port = None
+        if proc:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=0.5)
+            except Exception as e:
+                log.debug("Error stopping Xray bridge: %s", e)
+        if self._xray_config_path and self._xray_config_path.exists():
+            try:
+                self._xray_config_path.unlink()
+            except OSError:
+                pass
+            self._xray_config_path = None
 
     def set_available_servers(self, servers: list) -> None:
         with self._lock:
@@ -179,6 +271,8 @@ class SingBoxEngine(ProxyEngine):
     def can_switch_server(self, server) -> bool:
         with self._lock:
             if not self.is_running() or not self._api_port or not self._api_secret:
+                return False
+            if self._xray_process is not None or self._needs_xray_bridge(server):
                 return False
             return server_identity(server) in self._server_tag_map
 
@@ -261,12 +355,20 @@ class SingBoxEngine(ProxyEngine):
 
     def start(self, server):
         with self._lock:
-            if self.available_servers:
+            if self.is_connected or self.process is not None:
+                self.disconnect_from_server()
+
+            if self.available_servers and not self._needs_xray_bridge(server):
                 self._api_port = _find_free_port()
                 self._api_secret = secrets.token_hex(16)
             else:
                 self._api_port = None
                 self._api_secret = None
+
+            if self._needs_xray_bridge(server):
+                if not self._start_xray_bridge(server):
+                    self.statusChanged.emit(tr("engine.binary_missing").format(engine="xray"), True)
+                    return False
 
         if self.tun_mode:
             if sys.platform == "win32":
@@ -276,6 +378,8 @@ class SingBoxEngine(ProxyEngine):
             if not ok:
                 log.error("TUN start blocked: %s", reason)
                 self.statusChanged.emit(tr("tun.failed_prefix").format(reason=reason), True)
+                with self._lock:
+                    self._stop_xray_bridge()
                 return False
             if sys.platform.startswith("linux"):
                 # Grant is a silent no-op when capabilities and the Polkit
@@ -286,8 +390,14 @@ class SingBoxEngine(ProxyEngine):
                     reason = tr("tun.no_caps")
                     log.error("TUN start blocked: %s", reason)
                     self.statusChanged.emit(tr("tun.failed_prefix").format(reason=reason), True)
+                    with self._lock:
+                        self._stop_xray_bridge()
                     return False
-        return super().start(server)
+        ok = super().start(server)
+        if not ok:
+            with self._lock:
+                self._stop_xray_bridge()
+        return ok
 
     def teardown(self):
         super().teardown()
@@ -295,6 +405,7 @@ class SingBoxEngine(ProxyEngine):
             self._server_tag_map.clear()
             self._api_port = None
             self._api_secret = None
+            self._stop_xray_bridge()
         if self.tun_mode:
             if sys.platform == "win32":
                 self._clean_stale_tun_adapter()
@@ -314,6 +425,7 @@ class SingBoxEngine(ProxyEngine):
             custom_dns=self.custom_dns,
             hy2_insecure=self.hy2_insecure,
             block_udp=self.block_udp,
+            bypass_lan=self.bypass_lan,
             available_servers=self.available_servers,
             api_port=self._api_port,
             api_secret=self._api_secret,
@@ -322,6 +434,7 @@ class SingBoxEngine(ProxyEngine):
             mux_enabled=self.mux_enabled,
             mux_protocol=self.mux_protocol,
             mux_max_connections=self.mux_max_connections,
+            xray_port=self._xray_port,
         )
 
     def build_args(self, server):

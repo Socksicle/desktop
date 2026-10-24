@@ -37,7 +37,7 @@ PING_PROBE_PORT = 80
 DEFAULT_PING_METHOD = "thp"
 DEFAULT_PING_TIMEOUT = 3.0
 PING_TIMEOUTS = {"thp": 2.5, "tcp_connect": 2.0, "http_head": 3.0, "http_get": 3.0}
-DEFAULT_PING_CONCURRENCY = 20
+DEFAULT_PING_CONCURRENCY = 64
 
 
 def _build_socks5_connect_request(host: str, port: int) -> bytes:
@@ -88,26 +88,35 @@ PING_PROBE_TARGETS = [(t[0], t[1]) for t in DEFAULT_PROBE_TARGETS]
 def parse_ping_url(url: str | None) -> tuple[str, str, int, bool]:
     """Parse a ping URL into (host, path, port, is_ssl).
 
-    Defaults to (PING_PROBE_HOST, PING_PROBE_PATH, PING_PROBE_PORT, False)
-    if url is empty or invalid.
+    An empty or missing URL falls back to the default probe target. A
+    non-empty URL that cannot be parsed raises ValueError so a broken setting
+    surfaces as a ping failure instead of probing an unrelated host.
     """
-    if not url or not isinstance(url, str) or not url.strip():
+    if url is None:
         return (PING_PROBE_HOST, PING_PROBE_PATH, PING_PROBE_PORT, False)
+    if not isinstance(url, str):
+        raise ValueError(f"invalid ping URL: {url!r}")
     raw = url.strip()
+    if not raw:
+        return (PING_PROBE_HOST, PING_PROBE_PATH, PING_PROBE_PORT, False)
     if "://" not in raw:
         raw = "http://" + raw
+    parts = urlsplit(raw)
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"unsupported ping URL scheme: {url!r}")
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"ping URL has no host: {url!r}")
     try:
-        parts = urlsplit(raw)
-        host = parts.hostname or PING_PROBE_HOST
-        is_ssl = parts.scheme.lower() == "https"
-        default_port = 443 if is_ssl else 80
-        port = parts.port or default_port
-        path = parts.path if parts.path else PING_PROBE_PATH
-        if parts.query:
-            path = f"{path}?{parts.query}"
-        return (host, path, port, is_ssl)
-    except Exception:
-        return (PING_PROBE_HOST, PING_PROBE_PATH, PING_PROBE_PORT, False)
+        port = parts.port
+    except ValueError as e:
+        raise ValueError(f"invalid ping URL port: {url!r}") from e
+    is_ssl = scheme == "https"
+    path = parts.path if parts.path else PING_PROBE_PATH
+    if parts.query:
+        path = f"{path}?{parts.query}"
+    return (host, path, port or (443 if is_ssl else 80), is_ssl)
 
 
 def _build_http_request(host_header: str, path: str, method: str) -> bytes:
@@ -126,13 +135,14 @@ def _http_probe_succeeded(buffer: bytes) -> bool | None:
         return None
     status_line = buffer.split(b"\r\n", 1)[0]
     parts = status_line.split(b" ")
-    if len(parts) >= 2:
-        try:
-            code = int(parts[1])
-        except ValueError:
-            return True
-        if code == 429:
-            return False
+    if len(parts) < 2:
+        return False
+    try:
+        code = int(parts[1])
+    except ValueError:
+        return False
+    if code == 429:
+        return False
     return True
 
 
@@ -472,6 +482,8 @@ async def async_ping_server_job(
     protocol: Any = None,
     timeout: float | None = None,
     url: str | None = None,
+    proxy_ready: bool | None = None,
+    direct: bool = True,
 ) -> tuple[int, float]:
     """Asynchronously probe a single server and return (index, latency_ms or SENTINEL)."""
     try:
@@ -479,49 +491,49 @@ async def async_ping_server_job(
         is_quic_proto = proto_val == "hysteria2"
         eff_timeout = float(timeout) if timeout is not None else PING_TIMEOUTS.get(method, 3.0)
 
-        if is_quic_proto:
-            # 1. If SOCKS5 is connected, test HTTP through tunnel
-            if socks5_port is not None and await async_socks5_proxy_ready(socks5_port, timeout=0.5):
-                ms = await async_http_ping_via_socks5_once(
-                    host, socks5_port,
+        if not direct and proxy_ready is None and socks5_port is not None:
+            proxy_ready = await async_socks5_proxy_ready(socks5_port, timeout=0.5)
+
+        async def _run_probe() -> float | None:
+            if not direct and proxy_ready and socks5_port is not None:
+                if method == "tcp_connect":
+                    _, _, probe_port, _ = parse_ping_url(url)
+                    return await async_tcp_connect_ping_via_socks5(
+                        host, socks5_port, timeout=eff_timeout, port=probe_port)
+                else:
+                    return await async_http_ping_via_socks5_once(
+                        host, socks5_port,
+                        timeout=eff_timeout,
+                        method="HEAD" if method == "http_head" else "GET",
+                        url=url,
+                    )
+
+            if is_quic_proto:
+                # 1. Try direct QUIC Initial probe (UDP)
+                ms_val = await async_direct_quic_ping(host, port, timeout=eff_timeout)
+                # 2. Fallback to TCP if port is also open
+                if ms_val is None:
+                    ms_val = await async_direct_tcp_ping(host, port, timeout=min(eff_timeout, 1.5))
+                return ms_val
+            elif method == "thp":
+                _, probe_path, _, _ = parse_ping_url(url)
+                res = await Thp.async_probe(host, int(port), timeout_sec=eff_timeout, probe_path=probe_path)
+                return float(res.thp_score_ms) if res.quality != ProbeQuality.FAILED else None
+            elif method == "tcp_connect":
+                return await async_direct_tcp_ping(host, port, timeout=eff_timeout)
+            else:
+                _, probe_path, _, _ = parse_ping_url(url)
+                return await async_direct_http_ping(
+                    host, port,
                     timeout=eff_timeout,
                     method="HEAD" if method == "http_head" else "GET",
-                    url=url,
+                    path=probe_path,
                 )
-            else:
-                ms = None
-            # 2. Try direct QUIC Initial probe (UDP)
-            if ms is None:
-                ms = await async_direct_quic_ping(host, port, timeout=eff_timeout)
-            # 3. Fallback to TCP if port is also open
-            if ms is None:
-                ms = await async_direct_tcp_ping(host, port, timeout=min(eff_timeout, 1.5))
-        elif method == "thp":
-            _, probe_path, _, _ = parse_ping_url(url)
-            res = await Thp.async_probe(host, int(port), timeout_sec=eff_timeout, probe_path=probe_path)
-            ms = float(res.thp_score_ms) if res.quality != ProbeQuality.FAILED else None
-        elif method == "tcp_connect":
-            if socks5_port is not None and await async_socks5_proxy_ready(socks5_port, timeout=0.5):
-                _, _, probe_port, _ = parse_ping_url(url)
-                ms = await async_tcp_connect_ping_via_socks5(
-                    host, socks5_port, timeout=eff_timeout, port=probe_port)
-            else:
-                ms = await async_direct_tcp_ping(host, port, timeout=eff_timeout)
-        elif socks5_port is not None and await async_socks5_proxy_ready(socks5_port, timeout=0.5):
-            ms = await async_http_ping_via_socks5_once(
-                host, socks5_port,
-                timeout=eff_timeout,
-                method="HEAD" if method == "http_head" else "GET",
-                url=url,
-            )
-        else:
-            _, probe_path, _, _ = parse_ping_url(url)
-            ms = await async_direct_http_ping(
-                host, port,
-                timeout=eff_timeout,
-                method="HEAD" if method == "http_head" else "GET",
-                path=probe_path,
-            )
+
+        try:
+            ms = await asyncio.wait_for(_run_probe(), timeout=eff_timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            ms = None
     except Exception as e:
         log.debug("Async ping server (%s:%s) error: %s", host, port, e)
         ms = None
@@ -542,6 +554,7 @@ async def async_ping_all(
     concurrency: int = DEFAULT_PING_CONCURRENCY,
     timeout: float | None = None,
     url: str | None = None,
+    direct: bool = True,
 ) -> dict[int, float]:
     """Concurrently ping a list of servers with bounded concurrency via asyncio.
 
@@ -551,6 +564,10 @@ async def async_ping_all(
     results: dict[int, float] = {}
     if not servers:
         return results
+
+    proxy_ready = False
+    if not direct and socks5_port is not None:
+        proxy_ready = await async_socks5_proxy_ready(socks5_port, timeout=0.5)
 
     sem = asyncio.Semaphore(max(1, concurrency))
 
@@ -567,6 +584,8 @@ async def async_ping_all(
                     protocol=protocol,
                     timeout=timeout,
                     url=url,
+                    proxy_ready=proxy_ready,
+                    direct=direct,
                 )
         results[idx] = ms
         if callback is not None:

@@ -89,9 +89,18 @@ PING_TIMEOUT_DEFAULT = 3
 PING_TIMEOUT_MIN = 1
 PING_TIMEOUT_MAX = 10
 
+AUTO_UPDATE_INTERVAL_OPTIONS: list[tuple[float, str]] = [
+    (0.5, "opt.interval.30m"),
+    (1.0, "opt.interval.1h"),
+    (2.0, "opt.interval.2h"),
+    (4.0, "opt.interval.4h"),
+    (6.0, "opt.interval.6h"),
+    (12.0, "opt.interval.12h"),
+    (24.0, "opt.interval.24h"),
+]
+
 LANGUAGE_OPTIONS: list[tuple[str, str]] = [
     ("ru", "Русский"),
     ("en", "English"),
     ("zh", "中文"),
-    ("he", "עברית (בטא)"),
 ]

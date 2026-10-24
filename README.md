@@ -4,7 +4,7 @@
 
 Socksicle is a desktop proxy client for Windows and Linux with a Material 3 interface. It configures and manages standalone proxy cores ([sing-box](https://github.com/SPlayer/sing-box) and [Xray-core](https://github.com/XTLS/Xray-core)), routing traffic through a local SOCKS5 proxy or a system-wide TUN adapter.
 
-> **Status:** Early development (`0.1.1`). Expect bugs and breaking changes.
+> **Status:** Early development (`0.1.2-rc.1`). Expect bugs and breaking changes.
 
 | Main | Settings | About |
 |:---:|:---:|:---:|

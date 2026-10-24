@@ -317,7 +317,11 @@ def initialize():
     # Emergency crash recovery: clean any stale Kill Switch firewall rules from previous taskkill crashes
     try:
         from utils.killswitch import KillSwitchManager
-        KillSwitchManager.get_instance().clean_stale_rules()
+        if not KillSwitchManager.get_instance().clean_stale_rules():
+            log.warning(
+                "Stale Kill Switch rules from a previous session were not "
+                "removed; network traffic may stay blocked until Socksicle "
+                "is started with administrator rights")
     except Exception as e:
         log.debug("Startup stale rule cleanup skipped: %s", e)
 
@@ -361,10 +365,11 @@ def install_excepthook(window=None):
 
 
 def setup_sigint_handler(app, window=None):
-    """Ensure Ctrl+C (SIGINT) and console events cleanly quit the application."""
+    """Ensure Ctrl+C (SIGINT) and termination (SIGTERM) cleanly quit the application."""
 
-    def _sigint_handler(signum, frame):
-        log.info("Received SIGINT (Ctrl+C), shutting down...")
+    def _signal_handler(signum, frame):
+        sig_name = "SIGTERM" if signum == getattr(signal, "SIGTERM", None) else "SIGINT"
+        log.info("Received %s, shutting down cleanly...", sig_name)
         if window and hasattr(window, "quit_app") and callable(window.quit_app):
             window.quit_app()
         elif hasattr(app, "quit") and callable(app.quit):
@@ -372,10 +377,13 @@ def setup_sigint_handler(app, window=None):
         else:
             QCoreApplication.quit()
 
-    try:
-        signal.signal(signal.SIGINT, _sigint_handler)
-    except (ValueError, OSError, AttributeError) as e:
-        log.debug("Could not install SIGINT handler: %s", e)
+    for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _signal_handler)
+        except (ValueError, OSError, AttributeError) as e:
+            log.debug("Could not install %s handler: %s", sig, e)
 
     # In Qt, C++ event loop blocks Python signal evaluation when idling.
     # On POSIX (Linux/macOS), signal.set_wakeup_fd + QSocketNotifier wakes
@@ -404,17 +412,17 @@ def setup_sigint_handler(app, window=None):
             def _cleanup():
                 try:
                     signal.set_wakeup_fd(old_fd)
-                except Exception:
-                    pass
+                except (ValueError, OSError) as e:
+                    log.debug("Failed to restore signal wakeup fd: %s", e)
                 try:
                     notifier.setEnabled(False)
-                except Exception:
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    log.debug("Failed to disable socket notifier: %s", e)
                 for s in (rsock, wsock):
                     try:
                         s.close()
-                    except Exception:
-                        pass
+                    except OSError as e:
+                        log.debug("Failed to close signal wakeup socket: %s", e)
 
             if hasattr(app, "aboutToQuit") and hasattr(app.aboutToQuit, "connect"):
                 app.aboutToQuit.connect(_cleanup)
@@ -517,23 +525,13 @@ def apply_language_from_settings(settings: dict | None = None) -> str:
     return set_language(settings.get("language"))
 
 
-def acquire_single_instance_lock():
-    """Acquire the app-wide single-instance lock (QLockFile in the user config dir).
-
-    Returns the QLockFile that the caller must keep referenced for the
-    process lifetime, or None when another Socksicle instance already holds
-    it. QLockFile detects and removes lock files left by crashed instances.
-    """
-    from PySide6.QtCore import QLockFile
-
-    from utils.platform_utils import get_config_dir
-
-    lock = QLockFile(str(get_config_dir() / "single_instance.lock"))
-    if lock.tryLock(0):
-        log.info("Single-instance lock acquired: %s", lock.fileName())
-        return lock
-    log.warning("Second Socksicle instance refused: lock %s is already held", lock.fileName())
-    return None
+from utils.single_instance import (
+    acquire_single_instance_lock,
+    get_single_instance_name,
+    notify_running_instance,
+    setup_single_instance_server,
+    SingleInstanceServer,
+)
 
 
 def install_native_handlers(app, window):

@@ -260,6 +260,9 @@ class ServerItem(QFrame):
         menu = QMenu(self)
         menu.setAttribute(Qt.WA_TranslucentBackground, True)
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        accent_hex = getattr(self.theme, 'primary', '#D0BCFF')
+        c = QColor(accent_hex)
+        sel_bg = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.25)"
         menu.setStyleSheet(f"""
             QMenu {{
                 background-color: {getattr(self.theme, 'surface_container_high', '#241F32')};
@@ -270,8 +273,8 @@ class ServerItem(QFrame):
             }}
             QMenu::item {{ padding: 8px 16px; border-radius: 8px; }}
             QMenu::item:selected {{
-                background-color: {getattr(self.theme, 'primary', '#D0BCFF')}33;
-                color: {getattr(self.theme, 'primary', '#D0BCFF')};
+                background-color: {sel_bg};
+                color: #FFFFFF;
             }}
         """)
         act_qr = QAction(tr("item.menu_qr"), self)

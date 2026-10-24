@@ -199,7 +199,7 @@ def generate_singbox_vless_outbound(node: VlessNode, tag: str = "proxy") -> dict
             tls_block["server_name"] = sni
         if node.fingerprint:
             tls_block["utls"] = {"enabled": True, "fingerprint": node.fingerprint}
-        if node.insecure or node.pinned_peer_cert_sha256:
+        if node.insecure:
             tls_block["insecure"] = True
         alpn = node.alpn or _default_alpn(node.transport)
         if alpn:

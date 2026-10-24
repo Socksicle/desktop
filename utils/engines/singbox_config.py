@@ -32,6 +32,20 @@ def set_debug_logs(enabled: bool) -> None:
 TUN_ADAPTER_NAME = "socksicle-tun"
 TUN_ADDRESS = "172.19.0.1/30"
 
+LAN_CIDRS = (
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "224.0.0.0/4",
+    "255.255.255.255/32",
+    "fc00::/7",
+    "fe80::/10",
+    "::1/128",
+    "ff00::/8",
+)
+
 _DEFAULT_DNS_SERVER = "1.1.1.1"
 _DNS_QUERY_PATH = "/dns-query"
 
@@ -147,8 +161,17 @@ def _build_dns_servers(custom_dns=None) -> list[dict]:
     return servers
 
 
-def _build_node_outbound(server, hy2_insecure: bool) -> dict:
+def _build_node_outbound(server, hy2_insecure: bool, xray_port: int | None = None) -> dict:
     """Build one node outbound; the caller assigns the node tag."""
+    transport = (getattr(server, "transport", "tcp") or "tcp").strip().lower()
+    if transport in ("xhttp", "splithttp"):
+        if xray_port:
+            return {
+                "type": "socks",
+                "server": "127.0.0.1",
+                "server_port": int(xray_port),
+            }
+        raise ValueError(f"sing-box does not support transport: {transport}")
     proto = getattr(server, "protocol", ProxyProtocol.SHADOWSOCKS)
     if proto == ProxyProtocol.HYSTERIA2:
         return _build_singbox_hysteria2_outbound(server, allow_insecure=hy2_insecure)
@@ -223,6 +246,8 @@ def _generate_config(
     mux_enabled: bool = False,
     mux_protocol: str = MUX_DEFAULT_PROTOCOL,
     mux_max_connections: int = MUX_MAX_CONNECTIONS_DEFAULT,
+    xray_port: int | None = None,
+    bypass_lan: bool = True,
 ) -> dict:
     """Generate a sing-box 1.14 JSON config.
 
@@ -231,8 +256,15 @@ def _generate_config(
     tunnel or tearing down the TUN adapter.
     """
     mux_block = _build_mux_block(mux_enabled, mux_protocol, mux_max_connections)
-    if available_servers:
-        candidates = list(available_servers)
+    active_transport = (getattr(server, "transport", "tcp") or "tcp").strip().lower()
+    active_is_xhttp = active_transport in ("xhttp", "splithttp")
+
+    if available_servers and not active_is_xhttp:
+        # Exclude xhttp/splithttp nodes so they do not clutter the Clash API selector
+        candidates = [
+            s for s in available_servers
+            if (getattr(s, "transport", "tcp") or "tcp").strip().lower() not in ("xhttp", "splithttp")
+        ]
         active_id = server_identity(server)
         if not any(server_identity(s) == active_id for s in candidates):
             candidates.insert(0, server)
@@ -242,8 +274,10 @@ def _generate_config(
 
     server_outbounds: list[dict] = []
     node_tags: list[str] = []
-    server_ip_cidrs: list[str] = []
-    server_domains: list[str] = []
+    server_ip_cidrs: dict[str, None] = {}
+    server_domains: dict[str, None] = {}
+    blocked_ip_cidrs: dict[str, None] = {}
+    blocked_domains: dict[str, None] = {}
     tag_map: dict[str, str] = {}
 
     for candidate in candidates:
@@ -252,7 +286,7 @@ def _generate_config(
             continue
         is_active = identity == active_id
         try:
-            outbound = _build_node_outbound(candidate, hy2_insecure)
+            outbound = _build_node_outbound(candidate, hy2_insecure, xray_port=xray_port if is_active else None)
         except Exception as e:
             if is_active:
                 # The selected server must never silently fall back to
@@ -277,15 +311,19 @@ def _generate_config(
         host = getattr(candidate, "host", "") or ""
         if not host:
             continue
+        c_transport = (getattr(candidate, "transport", "tcp") or "tcp").strip().lower()
+        is_xhttp = c_transport in ("xhttp", "splithttp")
         try:
             ip = ipaddress.ip_address(host)
         except ValueError:
-            if host not in server_domains:
-                server_domains.append(host)
+            server_domains.setdefault(host, None)
+            if tun_mode and is_xhttp:
+                blocked_domains.setdefault(host, None)
         else:
             cidr = f"{host}/32" if ip.version == 4 else f"{host}/128"
-            if cidr not in server_ip_cidrs:
-                server_ip_cidrs.append(cidr)
+            server_ip_cidrs.setdefault(cidr, None)
+            if tun_mode and is_xhttp:
+                blocked_ip_cidrs.setdefault(cidr, None)
 
     if server_tag_map_out is not None:
         server_tag_map_out.clear()
@@ -324,7 +362,7 @@ def _generate_config(
             # sdelay.txt architecture: nftables fast path and kernel-level
             # bypass pre-matching keep local/game traffic out of sing-box.
             rules.extend(linux_tun.build_pre_match_rules(
-                dns_hijack_inbound="tun-in"))
+                dns_hijack_inbound="tun-in", bypass_lan=bypass_lan))
         else:
             rules.append({"action": "sniff"})
             rules.append({"inbound": ["tun-in"], "protocol": "dns",
@@ -335,20 +373,33 @@ def _generate_config(
         rules.append({"port": 53, "action": "sniff"})
         rules.append({"protocol": "dns", "action": "route", "outbound": "proxy"})
     rules.append({"port": 123, "action": "route", "outbound": "direct"})
-    if server_ip_cidrs:
-        rules.append({"ip_cidr": server_ip_cidrs, "action": "route", "outbound": "direct"})
-    if server_domains:
-        rules.append({"domain": server_domains, "action": "route", "outbound": "direct"})
-    rules.append({"ip_is_private": True, "action": "route", "outbound": "direct"})
+    if blocked_ip_cidrs:
+        rules.append({"ip_cidr": list(blocked_ip_cidrs), "action": "reject"})
+    if blocked_domains:
+        rules.append({"domain": list(blocked_domains), "action": "reject"})
+    unblocked_ips = [c for c in server_ip_cidrs if c not in blocked_ip_cidrs]
+    unblocked_domains = [d for d in server_domains if d not in blocked_domains]
+    if unblocked_ips:
+        rules.append({"ip_cidr": unblocked_ips, "action": "route", "outbound": "direct"})
+    if unblocked_domains:
+        rules.append({"domain": unblocked_domains, "action": "route", "outbound": "direct"})
+    if bypass_lan:
+        rules.append({"ip_is_private": True, "action": "route", "outbound": "direct"})
     if block_udp:
         rules.append({"network": "udp", "action": "reject"})
 
     inbounds: list[dict] = []
     if tun_mode:
+        exclude_cidrs = list(server_ip_cidrs)
+        if bypass_lan:
+            for cidr in LAN_CIDRS:
+                if cidr not in exclude_cidrs:
+                    exclude_cidrs.append(cidr)
+
         if sys.platform.startswith("linux"):
             # sing-box 1.14 TUN inbound: dns_mode hijack + auto_redirect.
             tun_inbound = linux_tun.build_tun_inbound(
-                exclude_cidrs=list(server_ip_cidrs) if server_ip_cidrs else None)
+                exclude_cidrs=exclude_cidrs if exclude_cidrs else None)
         else:
             tun_inbound = {
                 "type": "tun",
@@ -357,12 +408,12 @@ def _generate_config(
                 "address": [TUN_ADDRESS],
                 "dns_mode": "hijack",
                 "auto_route": True,
-                "strict_route": False,
+                "strict_route": True,
                 "stack": "mixed",
             }
-            if server_ip_cidrs:
+            if exclude_cidrs:
                 # Keep direct connections to the proxy endpoints outside the tunnel.
-                tun_inbound["route_exclude_address"] = list(server_ip_cidrs)
+                tun_inbound["route_exclude_address"] = list(exclude_cidrs)
         inbounds.append(tun_inbound)
     inbounds.append({
         "type": "mixed",

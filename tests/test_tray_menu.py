@@ -131,3 +131,88 @@ def test_tray_connect_to_unknown_server_is_noop(main_win, monkeypatch):
 
     assert scheduled == []
     assert win.server_panel.get_selected_index() == before
+
+
+def test_tray_status_action_top_disabled(main_win):
+    tm = main_win.tray_manager
+    assert tm.status_action.isEnabled() is False
+
+    # Disconnected
+    tm.update_status(False)
+    assert not tm.status_action.isEnabled()
+    assert tm.status_action.text() != ""
+
+    # Connected to a server
+    tm.update_status(True, "Frankfurt-01")
+    assert not tm.status_action.isEnabled()
+    assert "Frankfurt-01" in tm.status_action.text()
+    assert not tm.status_action.icon().isNull()
+
+    # Connecting
+    tm.update_status(False, "Frankfurt-01", is_connecting=True)
+    assert not tm.status_action.isEnabled()
+    assert "Frankfurt-01" in tm.status_action.text()
+
+
+def test_tray_mode_switch(main_win):
+    win = main_win
+    tm = win.tray_manager
+
+    # Initially tun_mode is False
+    assert tm.proxy_action.isChecked() is True
+    assert tm.tun_action.isChecked() is False
+    assert "TUN" not in tm.mode_menu.title() or "Proxy" in tm.mode_menu.title() or "прокси" in tm.mode_menu.title().lower()
+
+    # Switch to TUN via action
+    tm.tun_action.trigger()
+    assert tm.tun_action.isChecked() is True
+    assert tm.proxy_action.isChecked() is False
+    assert "TUN" in tm.mode_menu.title()
+    assert win.settings.get("tun_mode") is True
+
+    # Switch back to Proxy
+    tm.proxy_action.trigger()
+    assert tm.proxy_action.isChecked() is True
+    assert tm.tun_action.isChecked() is False
+    assert win.settings.get("tun_mode") is False
+
+
+def test_tray_server_checkboxes(main_win):
+    win = main_win
+    tm = win.tray_manager
+
+    # All server actions should be checkable
+    server_actions = [act for act, _ in tm._server_actions]
+    assert len(server_actions) >= 2
+    for act in server_actions:
+        assert act.isCheckable() is True
+
+    # Select manual-1
+    manual_srv = win.manual_servers[0]
+    sub_srv = win.subscription_manager.subscriptions[0]["servers"][0]
+
+    tm.set_selected_server(manual_srv)
+    act_manual = next(a for a, s in tm._server_actions if s.name == manual_srv.name)
+    act_sub = next(a for a, s in tm._server_actions if s.name == sub_srv.name)
+
+    assert act_manual.isChecked() is True
+    assert act_sub.isChecked() is False
+
+    # Triggering sub_srv checks it and emits connectRequested
+    requested = []
+    tm.connectRequested.connect(requested.append)
+    act_sub.trigger()
+
+    assert requested == [sub_srv]
+    assert act_sub.isChecked() is True
+    assert act_manual.isChecked() is False
+
+
+def test_tray_menu_icons_and_styling(main_win):
+    tm = main_win.tray_manager
+    assert not tm.show_action.icon().isNull()
+    assert not tm.mode_menu.icon().isNull()
+    assert not tm.servers_menu.icon().isNull()
+    assert not tm.quit_action.icon().isNull()
+    assert "min-width: 170px" in tm._stylesheet
+

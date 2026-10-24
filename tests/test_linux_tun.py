@@ -19,32 +19,33 @@ def _make_getcap_output(caps):
 
 
 class TestCapabilities:
-    def test_all_required_caps_pass(self, monkeypatch):
-        monkeypatch.setattr(linux_tun, "_which",
-                            lambda name: f"/usr/bin/{name}")
+    def test_capabilities_check_and_missing(self, monkeypatch):
+        monkeypatch.setattr(linux_tun, "_which", lambda name: f"/usr/bin/{name}")
+
+        # All required caps
         monkeypatch.setattr(linux_tun.subprocess, "run",
                             _make_getcap_output(
                                 "cap_net_admin=ep cap_net_raw=ep "
                                 "cap_net_bind_service=ep"))
         assert linux_tun.has_tun_capabilities("/usr/bin/sing-box") is True
 
-    def test_missing_cap_fails(self, monkeypatch):
-        monkeypatch.setattr(linux_tun, "_which",
-                            lambda name: f"/usr/bin/{name}")
+        # Missing cap fails
         monkeypatch.setattr(linux_tun.subprocess, "run",
                             _make_getcap_output(
                                 "cap_net_admin=ep cap_net_bind_service=ep"))
         assert linux_tun.has_tun_capabilities("/usr/bin/sing-box") is False
 
-    def test_missing_binary_rejected(self):
+        # Missing binary rejected
         assert linux_tun.has_tun_capabilities("/no/such/path") is False
         assert not linux_tun.grant_tun_capabilities("/no/such/path")
 
-    def test_grant_calls_pkexec_setcap(self, monkeypatch, tmp_path):
-        calls = []
+    def test_capabilities_grant(self, monkeypatch, tmp_path):
         binary = tmp_path / "sing-box"
         binary.write_text("")
+        monkeypatch.setattr(linux_tun, "_which", lambda name: f"/usr/bin/{name}")
 
+        # Success: calls pkexec setcap
+        calls = []
         def fake_run(cmd, *a, **kwargs):
             calls.append(cmd)
             name = os.path.basename(cmd[0])
@@ -53,23 +54,16 @@ class TestCapabilities:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(linux_tun.subprocess, "run", fake_run)
-        monkeypatch.setattr(linux_tun, "_which",
-                            lambda name: f"/usr/bin/{name}")
         assert linux_tun.grant_tun_capabilities(binary) is True
         grant = [c for c in calls if os.path.basename(c[0]) == "pkexec"][0]
         assert os.path.basename(grant[1]) == "setcap"
         assert grant[2] == "cap_net_admin,cap_net_raw,cap_net_bind_service+eip"
 
-    def test_grant_rejects_when_pkexec_fails(self, monkeypatch, tmp_path):
-        binary = tmp_path / "sing-box"
-        binary.write_text("")
-
-        def fake_run(cmd, *a, **kwargs):
+        # Failure: pkexec fails
+        def fake_run_fail(cmd, *a, **kwargs):
             code = 1 if os.path.basename(cmd[0]) == "getcap" else 2
             return subprocess.CompletedProcess(cmd, code, stdout="", stderr="")
-        monkeypatch.setattr(linux_tun.subprocess, "run", fake_run)
-        monkeypatch.setattr(linux_tun, "_which",
-                            lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(linux_tun.subprocess, "run", fake_run_fail)
         assert linux_tun.grant_tun_capabilities(binary) is False
 
 
@@ -92,10 +86,11 @@ class TestBuildConfig:
         ]
         return nodes, "node-b"
 
-    def test_tun_fields_and_rule_order(self, tmp_path):
+    def test_build_config_rules_selectors_and_options(self, tmp_path):
         nodes, active = self._nodes()
-        config = linux_tun.build_config(nodes, active_tag=active,
-                                        work_dir=tmp_path)
+
+        # 1. Base tun inbound and rule ordering
+        config = linux_tun.build_config(nodes, active_tag=active, work_dir=tmp_path)
         inbound = config["inbounds"][0]
         assert inbound["type"] == "tun"
         assert inbound["dns_mode"] == "hijack"
@@ -104,52 +99,41 @@ class TestBuildConfig:
 
         actions = [r.get("action") for r in config["route"]["rules"]]
         assert actions.index("bypass") < actions.index("sniff")
-        assert config["route"]["rules"][0] == {
-            "ip_is_private": True, "action": "bypass"}
+        assert config["route"]["rules"][0] == {"ip_is_private": True, "action": "bypass"}
 
-    def test_bypass_processes_rule_before_sniff(self, tmp_path):
-        nodes, active = self._nodes()
-        config = linux_tun.build_config(
+        selector = config["outbounds"][0]
+        assert selector["type"] == "selector"
+        assert selector["default"] == active
+        assert selector["interrupt_exist_connections"] is True
+        assert "experimental" not in config
+
+        # 2. Bypass processes before sniff
+        cfg_proc = linux_tun.build_config(
             nodes, active_tag=active, work_dir=tmp_path,
             bypass_processes=["cs2", "steam"])
-        rules = config["route"]["rules"]
+        rules = cfg_proc["route"]["rules"]
         names = next(r for r in rules if "process_name" in r)
         assert names["process_name"] == ["cs2", "steam"]
         assert names["action"] == "bypass"
         assert rules.index(names) < [r.get("action") for r in rules].index("sniff")
 
-    def test_selector_defaults_to_active_node(self, tmp_path):
-        nodes, active = self._nodes()
-        config = linux_tun.build_config(nodes, active_tag=active,
-                                        work_dir=tmp_path)
-        selector = config["outbounds"][0]
-        assert selector["type"] == "selector"
-        assert selector["default"] == active
-        assert selector["interrupt_exist_connections"] is True
-
-    def test_local_srs_sets_used_when_present(self, tmp_path):
+        # 3. Local SRS rule sets
         (tmp_path / "geosite-ru.srs").write_bytes(b"\x01\x02")
-        nodes, active = self._nodes()
-        config = linux_tun.build_config(nodes, active_tag=active,
-                                        work_dir=tmp_path)
-        sets = config["route"]["rule_set"]
+        cfg_srs = linux_tun.build_config(nodes, active_tag=active, work_dir=tmp_path)
+        sets = cfg_srs["route"]["rule_set"]
         assert sets[0]["type"] == "local"
         assert sets[0]["format"] == "binary"
         assert all(Path(s["path"]).is_file() for s in sets)
-        assert config["route"]["rules"][-1] == {
-            "rule_set": ["geosite-ru"], "action": "route",
-            "outbound": "direct"}
+        assert cfg_srs["route"]["rules"][-1] == {
+            "rule_set": ["geosite-ru"], "action": "route", "outbound": "direct"}
 
-    def test_clash_api_block_when_credentials_given(self, tmp_path):
-        nodes, active = self._nodes()
-        config = linux_tun.build_config(nodes, active_tag=active,
-                                        work_dir=tmp_path,
-                                        api_port=19090, api_secret="tok")
-        api = config["experimental"]["clash_api"]
+        # 4. Clash API credentials
+        cfg_api = linux_tun.build_config(
+            nodes, active_tag=active, work_dir=tmp_path,
+            api_port=19090, api_secret="tok")
+        api = cfg_api["experimental"]["clash_api"]
         assert api["external_controller"] == "127.0.0.1:19090"
         assert api["secret"] == "tok"
-        assert "experimental" not in linux_tun.build_config(
-            nodes, active_tag=active, work_dir=tmp_path)
 
     def test_invalid_inputs_rejected(self, tmp_path):
         nodes, active = self._nodes()
@@ -161,6 +145,10 @@ class TestBuildConfig:
         with pytest.raises(linux_tun.LinuxTunError):
             linux_tun.build_config(
                 [{"type": "vless"}], active_tag="x", work_dir=tmp_path)
+        for bad_port in ("1080", 1080.5, True, 0, 65536):
+            with pytest.raises(linux_tun.LinuxTunError):
+                linux_tun.build_config(nodes, active_tag=active,
+                                       work_dir=tmp_path, local_port=bad_port)
 
 
 class TestWriteConfig:
@@ -176,7 +164,7 @@ class TestControlAPI:
     def _api(self):
         return linux_tun.SingBoxControlAPI(port=19090, secret="tok")
 
-    def test_switch_node_sends_put(self):
+    def test_control_api_methods_and_errors(self):
         api = self._api()
         requests = []
 
@@ -204,20 +192,18 @@ class TestControlAPI:
         assert json.loads(payload) == {"name": "node-a"}
         assert url == "http://127.0.0.1:19090/proxies/proxy-selector"
 
-    def test_switch_node_failure_returns_false(self):
-        api = self._api()
-        opener = mock.Mock()
-        opener.open.side_effect = OSError("refused")
+        # Failure returns False
+        opener_fail = mock.Mock()
+        opener_fail.open.side_effect = OSError("refused")
         with mock.patch.object(urllib.request, "build_opener",
-                               return_value=opener):
+                               return_value=opener_fail):
             assert api.switch_node("proxy-selector", "node-a") is False
 
-    def test_delay_returns_minus_one_on_error(self):
-        api = self._api()
-        opener = mock.Mock()
-        opener.open.side_effect = OSError("down")
+        # Delay error returns -1
+        opener_down = mock.Mock()
+        opener_down.open.side_effect = OSError("down")
         with mock.patch.object(urllib.request, "build_opener",
-                               return_value=opener):
+                               return_value=opener_down):
             assert api.get_node_delay("node-a") == -1
 
 
@@ -228,10 +214,12 @@ class TestDaemon:
         config = linux_tun.write_config({"log": {}}, tmp_path)
         return linux_tun.SingBoxDaemon(binary, config, tmp_path)
 
-    def test_rootless_start_uses_unshare(self, tmp_path):
+    def test_daemon_start_modes_and_failures(self, tmp_path):
         daemon = self._daemon(tmp_path)
         check = subprocess.CompletedProcess([], 0, "", "")
         popen = mock.Mock(return_value=mock.Mock(pid=123))
+
+        # Rootless start uses unshare
         with mock.patch.object(linux_tun.subprocess, "run",
                                return_value=check) as run, \
                 mock.patch.object(linux_tun.subprocess, "Popen", popen), \
@@ -248,17 +236,15 @@ class TestDaemon:
         assert args[1:5] == ["--user", "--map-root-user", "--net", "--"]
         assert args[5] == str(daemon.binary_path)
 
-    def test_start_blocked_when_caps_not_granted(self, tmp_path):
-        daemon = self._daemon(tmp_path)
+        # Blocked when caps not granted
         with mock.patch.object(linux_tun, "grant_tun_capabilities",
                                return_value=False), \
-                mock.patch.object(linux_tun.subprocess, "Popen") as popen, \
+                mock.patch.object(linux_tun.subprocess, "Popen") as popen_blocked, \
                 pytest.raises(PermissionError):
             daemon.start()
-        popen.assert_not_called()
+        popen_blocked.assert_not_called()
 
-    def test_check_failure_raises_with_stderr(self, tmp_path):
-        daemon = self._daemon(tmp_path)
+        # Check failure raises with stderr
         fail = subprocess.CompletedProcess([], 1, stdout="",
                                            stderr="bad field")
         with mock.patch.object(linux_tun, "grant_tun_capabilities",
@@ -268,8 +254,10 @@ class TestDaemon:
                 pytest.raises(linux_tun.LinuxTunError, match="bad field"):
             daemon.start()
 
-    def test_stop_kills_after_terminate_timeout(self, tmp_path):
+    def test_daemon_stop_and_namespace_args(self, tmp_path):
         daemon = self._daemon(tmp_path)
+
+        # Stop kills after terminate timeout
         proc = mock.Mock()
         proc.poll.return_value = None
         proc.wait.side_effect = [subprocess.TimeoutExpired("t", 3), None]
@@ -278,15 +266,15 @@ class TestDaemon:
         proc.terminate.assert_called_once()
         proc.kill.assert_called_once()
 
-    def test_stop_is_noop_when_not_running(self, tmp_path):
-        daemon = self._daemon(tmp_path)
-        daemon.stop()
-        assert daemon.process is None
+        # Stop is no-op when not running
+        daemon2 = self._daemon(tmp_path)
+        daemon2.stop()
+        assert daemon2.process is None
 
-    def test_namespace_entry_args_uses_pid(self, tmp_path):
-        daemon = self._daemon(tmp_path)
+        # Namespace entry args uses pid
+        daemon3 = self._daemon(tmp_path)
         with pytest.raises(linux_tun.LinuxTunError):
-            daemon.namespace_entry_args()
-        daemon.process = mock.Mock(pid=42)
-        assert daemon.namespace_entry_args() == [
+            daemon3.namespace_entry_args()
+        daemon3.process = mock.Mock(pid=42)
+        assert daemon3.namespace_entry_args() == [
             "nsenter", "-t", "42", "-U", "--preserve-credentials", "-n"]

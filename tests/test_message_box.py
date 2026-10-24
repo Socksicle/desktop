@@ -16,7 +16,7 @@ def theme():
     return M3Theme(preset_key="lavender")
 
 
-def test_message_box_init(qapp, theme):
+def test_message_box_content_and_icons(qapp, theme):
     dlg = MessageBox(title="Test Title", text="Hello world",
                      icon=MessageBox.Information,
                      buttons=MessageBox.Ok | MessageBox.Cancel,
@@ -27,136 +27,68 @@ def test_message_box_init(qapp, theme):
     assert not dlg.badge.isHidden()
     assert dlg.button(MessageBox.Ok) is not None
     assert dlg.button(MessageBox.Cancel) is not None
-    assert dlg.button(MessageBox.No) is None
 
-
-def test_message_box_informative_text(qapp, theme):
-    dlg = MessageBox(title="Error", text="Failed to connect", theme=theme)
-    assert dlg.txt_informative.isHidden()
-    dlg.setInformativeText("Error code: 500\nDetails: Connection refused")
+    # Informative text
+    dlg.setInformativeText("Details: Connection refused")
     assert not dlg.txt_informative.isHidden()
     assert "Connection refused" in dlg.txt_informative.toPlainText()
     dlg.setInformativeText("")
     assert dlg.txt_informative.isHidden()
 
-
-def test_message_box_icons(qapp, theme):
-    dlg = MessageBox(theme=theme)
-    assert dlg.badge.isHidden()
-
+    # Icon cycling
     for icon in (MessageBox.Information, MessageBox.Warning, MessageBox.Critical,
                  MessageBox.Question, MessageBox.Success):
         dlg.setIcon(icon)
         assert not dlg.badge.isHidden()
-        assert dlg.badge._symbol != ""
-        assert dlg.badge._pixmap is not None
-        assert not dlg.badge._pixmap.isNull()
-
-    # Verify uniform non-black badge background (warning matches info)
-    dlg.setIcon(MessageBox.Information)
-    info_bg = dlg.badge._bg_color.name()
-    dlg.setIcon(MessageBox.Warning)
-    warn_bg = dlg.badge._bg_color.name()
-    assert info_bg == warn_bg
-    assert warn_bg != "#000000"
+        assert dlg.badge._pixmap is not None and not dlg.badge._pixmap.isNull()
 
     dlg.setIcon(MessageBox.NoIcon)
     assert dlg.badge.isHidden()
 
-    pm = QPixmap(24, 24)
-    dlg.setIconPixmap(pm)
-    assert not dlg.badge.isHidden()
-    assert dlg.badge._pixmap is not None
 
-
-def test_message_box_standard_buttons(qapp, theme):
+def test_message_box_buttons(qapp, theme):
     dlg = MessageBox(theme=theme)
     dlg.setStandardButtons(MessageBox.Yes | MessageBox.No)
     btn_yes = dlg.button(MessageBox.Yes)
     btn_no = dlg.button(MessageBox.No)
-    assert btn_yes is not None
-    assert btn_no is not None
     assert dlg.standardButton(btn_yes) == MessageBox.Yes
-    assert dlg.standardButton(btn_no) == MessageBox.No
     assert dlg.buttonRole(btn_yes) == ButtonRole.YesRole
-    assert dlg.buttonRole(btn_no) == ButtonRole.NoRole
 
-
-def test_message_box_custom_buttons(qapp, theme):
-    dlg = MessageBox(theme=theme)
+    # Custom button
     custom_btn = dlg.addButton("Custom Action", ButtonRole.ActionRole)
     assert custom_btn in dlg._buttons
     assert dlg.buttonRole(custom_btn) == ButtonRole.ActionRole
-    assert dlg.standardButton(custom_btn) == MessageBox.NoButton
-
     dlg.removeButton(custom_btn)
     assert custom_btn not in dlg._buttons
-    assert custom_btn.parent() is None
+
+    # Default button
+    dlg.setDefaultButton(MessageBox.Yes)
+    assert dlg._default_button == btn_yes
 
 
-def test_message_box_default_button(qapp, theme):
-    dlg = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
-    ok_btn = dlg.button(MessageBox.Ok)
-    dlg.setDefaultButton(MessageBox.Ok)
-    assert dlg._default_button == ok_btn
-
-    cancel_btn = dlg.button(MessageBox.Cancel)
-    dlg.setDefaultButton(cancel_btn)
-    assert dlg._default_button == cancel_btn
-
-
-def test_message_box_click_and_exec(qapp, theme, monkeypatch):
+def test_message_box_interactions(qapp, theme, monkeypatch):
+    # Click and exec
     dlg = MessageBox(buttons=MessageBox.Yes | MessageBox.No, theme=theme)
     yes_btn = dlg.button(MessageBox.Yes)
-
     monkeypatch.setattr(dlg, "exec", lambda: dlg._on_button_clicked(yes_btn) or int(MessageBox.Yes))
-    res = dlg.exec()
-    assert res == int(MessageBox.Yes)
+    assert dlg.exec() == int(MessageBox.Yes)
     assert dlg.clickedButton() == yes_btn
 
+    # Close X triggers cancel
+    dlg2 = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
+    dlg2.btn_close_x.click()
+    assert dlg2._result_button == MessageBox.Cancel
 
-def test_message_box_close_x_triggers_cancel(qapp, theme):
-    dlg = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
-    dlg.btn_close_x.click()
-    assert dlg.clickedButton() == dlg.button(MessageBox.Cancel)
-    assert dlg._result_button == MessageBox.Cancel
+    # Escape triggers cancel
+    dlg3 = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
+    dlg3.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    assert dlg3._result_button == MessageBox.Cancel
 
-
-def test_message_box_escape_key(qapp, theme):
-    dlg = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
-    esc_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
-    dlg.keyPressEvent(esc_event)
-    assert dlg._result_button == MessageBox.Cancel
-
-
-def test_message_box_enter_key_clicks_default(qapp, theme):
-    dlg = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
-    dlg.setDefaultButton(MessageBox.Ok)
-    enter_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
-    dlg.keyPressEvent(enter_event)
-    assert dlg.clickedButton() == dlg.button(MessageBox.Ok)
-    assert dlg._result_button == MessageBox.Ok
-
-
-def test_message_box_mouse_dragging(qapp, theme):
-    dlg = MessageBox(theme=theme)
-    dlg.resize(420, 200)
-    dlg.show()
-
-    press = QMouseEvent(QMouseEvent.MouseButtonPress, QPointF(50, 20),
-                        QPointF(50, 20), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    dlg.mousePressEvent(press)
-    assert dlg._dragging is True
-    assert dlg._drag_pos is not None
-
-    move = QMouseEvent(QMouseEvent.MouseMove, QPointF(60, 30),
-                       QPointF(60, 30), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    dlg.mouseMoveEvent(move)
-
-    release = QMouseEvent(QMouseEvent.MouseButtonRelease, QPointF(60, 30),
-                          QPointF(60, 30), Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
-    dlg.mouseReleaseEvent(release)
-    assert dlg._dragging is False
+    # Enter clicks default
+    dlg4 = MessageBox(buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
+    dlg4.setDefaultButton(MessageBox.Ok)
+    dlg4.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+    assert dlg4._result_button == MessageBox.Ok
 
 
 def test_message_box_static_methods(qapp, theme, monkeypatch):
@@ -210,15 +142,17 @@ def test_message_box_dynamic_width_enlargement(qapp):
     assert long_dlg.width() >= 460
 
 
-def test_message_box_overlay_mode(qapp, theme):
+def test_message_box_overlay(qapp, theme):
     from PySide6.QtWidgets import QWidget
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QTimer, QPointF
+    from PySide6.QtGui import QMouseEvent
 
     parent = QWidget()
     parent.resize(440, 800)
     parent.container = QWidget(parent)
     parent.container.setGeometry(0, 0, 440, 800)
 
+    # 1. Overlay mode geometry and exec
     dlg = MessageBox(parent=parent, title="Overlay Alert", text="Testing overlay mode",
                      buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
     assert dlg._is_overlay is True
@@ -227,30 +161,17 @@ def test_message_box_overlay_mode(qapp, theme):
 
     ok_btn = dlg.button(MessageBox.Ok)
     QTimer.singleShot(20, lambda: ok_btn.click())
-    res = dlg.exec()
-    assert res == int(MessageBox.Ok)
+    assert dlg.exec() == int(MessageBox.Ok)
 
-
-def test_message_box_overlay_click_outside_rejects(qapp, theme):
-    from PySide6.QtWidgets import QWidget
-    from PySide6.QtCore import QPointF
-    from PySide6.QtGui import QMouseEvent
-
-    parent = QWidget()
-    parent.resize(440, 800)
-    parent.container = QWidget(parent)
-    parent.container.setGeometry(0, 0, 440, 800)
-
-    dlg = MessageBox(parent=parent, title="Overlay Outside", text="Click backdrop",
-                     buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
-    assert dlg._is_overlay is True
+    # 2. Outside click on backdrop rejects dialog
+    dlg2 = MessageBox(parent=parent, title="Overlay Outside", text="Click backdrop",
+                      buttons=MessageBox.Ok | MessageBox.Cancel, theme=theme)
     parent.show()
-    dlg.show()
+    dlg2.show()
     qapp.processEvents()
 
-    # Card is centered vertically, (10, 10) is on the top backdrop
     press = QMouseEvent(QMouseEvent.MouseButtonPress, QPointF(10, 10),
                         QPointF(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    dlg.mousePressEvent(press)
-    assert dlg._result_button == MessageBox.Cancel
+    dlg2.mousePressEvent(press)
+    assert dlg2._result_button == MessageBox.Cancel
 

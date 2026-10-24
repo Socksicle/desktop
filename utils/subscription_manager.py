@@ -9,8 +9,8 @@ from PySide6.QtCore import QObject, Signal, QTimer
 from .i18n import tr
 from .server_model import Server
 from .subscription_store import (
-    get_last_fetch_error, load_subscriptions, parse_subscription,
-    save_subscriptions,
+    get_installation_id, get_last_fetch_error, load_subscriptions,
+    parse_subscription, save_subscriptions,
 )
 
 log = logging.getLogger(__name__)
@@ -43,6 +43,9 @@ class SubscriptionManager(QObject):
         self.subscriptions = load_subscriptions()
         for sub in self.subscriptions:
             sub['servers'] = [Server.from_dict(s) for s in sub.get('servers', [])]
+            if sub.get('allow_insecure'):
+                for s in sub['servers']:
+                    s.insecure = True
 
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self._check_auto_update)
@@ -54,6 +57,10 @@ class SubscriptionManager(QObject):
             "user_agent_key": self._settings.get("user_agent_key", "socksicle"),
             "fake_hwid": self._settings.get("fake_hwid", False),
             "hwid_value": self._settings.get("hwid_value", ""),
+            # parse_subscription() falls back to the installation id for
+            # X-hwid; it must come from the live settings dict, otherwise
+            # every fetch generates a new id in this throwaway copy.
+            "installation_id": get_installation_id(self._settings),
         }
 
     def _serialize_unlocked(self):
@@ -132,6 +139,10 @@ class SubscriptionManager(QObject):
                     sub_dict["icon_emoji"] = old_sub["icon_emoji"]
                 if "is_pinned" in old_sub:
                     sub_dict["is_pinned"] = old_sub["is_pinned"]
+                if old_sub.get("allow_insecure"):
+                    sub_dict["allow_insecure"] = True
+                    for s in servers:
+                        s.insecure = True
                 if old_sub.get("is_customized"):
                     sub_dict["is_customized"] = True
                     sub_dict["name"] = old_sub.get("name", display_name)
@@ -145,7 +156,7 @@ class SubscriptionManager(QObject):
         """Refresh a subscription off the GUI thread; emits `updated` when done."""
         threading.Thread(target=self._update_worker, args=(sub,), daemon=True).start()
 
-    def _update_worker(self, sub, emit_signal=True):
+    def _update_worker(self, sub, emit_signal=True, persist=True):
         """Refresh a subscription; emits `updated` only when emit_signal is True."""
         links, meta = parse_subscription(sub['url'], self._get_sub_settings())
         if not links:
@@ -177,10 +188,14 @@ class SubscriptionManager(QObject):
                     if dedup_key not in old_keys:
                         new_count += 1
 
-        dropped_insecure = _drop_untrusted_insecure(new_servers)
-        if dropped_insecure:
-            log.info("Dropped insecure TLS flag from %d node(s) of subscription %s",
-                     dropped_insecure, sub.get('name', 'Subscription'))
+        if sub.get('allow_insecure', False):
+            for s in new_servers:
+                s.insecure = True
+        else:
+            dropped_insecure = _drop_untrusted_insecure(new_servers)
+            if dropped_insecure:
+                log.info("Dropped insecure TLS flag from %d node(s) of subscription %s",
+                         dropped_insecure, sub.get('name', 'Subscription'))
 
         with self._lock:
             sub['servers'] = new_servers
@@ -204,7 +219,8 @@ class SubscriptionManager(QObject):
                     sub[key] = meta[key]
             sub['last_updated'] = time.time()
 
-            save_subscriptions(self._serialize_unlocked())
+            if persist:
+                save_subscriptions(self._serialize_unlocked())
         if emit_signal:
             self.updated.emit(True, new_count)
 
@@ -213,7 +229,8 @@ class SubscriptionManager(QObject):
             self.subscriptions = [s for s in self.subscriptions if s['name'] != name]
             save_subscriptions(self._serialize_unlocked())
 
-    def rename(self, old_name: str, new_name: str, icon_emoji: str = "", url: str = ""):
+    def rename(self, old_name: str, new_name: str, icon_emoji: str = "", url: str = "",
+               allow_insecure: bool | None = None):
         """Rename subscription, update its emoji and optional URL, and persist.
 
         Any manual save latches ``is_customized`` so later refreshes no longer
@@ -228,7 +245,23 @@ class SubscriptionManager(QObject):
                 sub['icon_emoji'] = icon_emoji
             if url:
                 sub['url'] = url
+            if allow_insecure is not None:
+                sub['allow_insecure'] = bool(allow_insecure)
+                for s in sub.get('servers', []):
+                    s.insecure = bool(allow_insecure)
             sub['is_customized'] = True
+            save_subscriptions(self._serialize_unlocked())
+        return True
+
+    def set_allow_insecure(self, name: str, allow_insecure: bool):
+        """Toggle allow_insecure for subscription, update its servers, and persist."""
+        with self._lock:
+            sub = next((s for s in self.subscriptions if s['name'] == name), None)
+            if sub is None:
+                return False
+            sub['allow_insecure'] = bool(allow_insecure)
+            for s in sub.get('servers', []):
+                s.insecure = bool(allow_insecure)
             save_subscriptions(self._serialize_unlocked())
         return True
 
@@ -244,31 +277,52 @@ class SubscriptionManager(QObject):
 
 
 
+    def _start_updates(self, subs):
+        subs = list(subs)
+        if not subs:
+            return
+        workers = [
+            threading.Thread(
+                target=self._update_worker,
+                args=(sub, True, False),   # persist=False
+                daemon=True,
+            )
+            for sub in subs
+        ]
+        for t in workers:
+            t.start()
+
+        def _save_after():
+            for t in workers:
+                t.join()
+            with self._lock:
+                save_subscriptions(self._serialize_unlocked())
+
+        threading.Thread(target=_save_after, daemon=True).start()
+
     def _check_auto_update(self):
         """Periodically check if any subscription needs updating."""
+        if not self._settings.get("auto_update_subs", True):
+            return
         now = time.time()
         due = []
+        try:
+            default_interval = float(self._settings.get("auto_update_interval", 2))
+        except (ValueError, TypeError):
+            default_interval = 2.0
+        if default_interval <= 0:
+            default_interval = 2.0
+
         with self._lock:
             for sub in self.subscriptions:
-                interval_hours = sub.get('profile_update_interval', 0)
-                if interval_hours <= 0:
-                    continue
                 last = sub.get('last_updated', 0)
                 elapsed_hours = (now - last) / 3600
-                if elapsed_hours >= interval_hours:
+                if elapsed_hours >= default_interval:
                     due.append(sub)
-        for sub in due:
-            threading.Thread(
-                target=self._update_worker, args=(sub,), daemon=True,
-                kwargs={"emit_signal": False}
-            ).start()
+        self._start_updates(due)
 
     def update_all(self):
         """Update all subscriptions (for app startup)."""
         with self._lock:
             subs = list(self.subscriptions)
-        for sub in subs:
-            threading.Thread(
-                target=self._update_worker, args=(sub,), daemon=True,
-                kwargs={"emit_signal": False}
-            ).start()
+        self._start_updates(subs)

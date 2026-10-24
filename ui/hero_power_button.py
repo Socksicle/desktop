@@ -26,6 +26,7 @@ class HeroPowerButton(QWidget):
         self._is_connecting = False
         self._spin_angle = 0.0
         self._settle_start_angle = -90.0
+        self._disconnect_start_angle = -180.0
         self._progress = 0.0  # 0.0 = Disconnected, 1.0 = Connected
 
         self._color_accent = QColor("#D0BCFF")
@@ -65,6 +66,18 @@ class HeroPowerButton(QWidget):
         else:
             join_frac = min(1.0, max(0.0, (progress - 0.4) / 0.6))
             arc_len = 115.0 + (180.0 - 115.0) * join_frac
+        return rot_deg, arc_len
+
+    def _disconnect_ring_frame(self, progress: float) -> tuple:
+        """Rotation and arc length of the dissolving ring during turn-off.
+
+        As progress drops from 1.0 to 0.0:
+        The closed 180° ring breaks apart into two arcs, shrinking from 180°
+        down to 80°, while continuing to rotate clockwise with natural inertia.
+        """
+        t = 1.0 - max(0.0, min(1.0, progress))
+        rot_deg = self._disconnect_start_angle - t * 80.0
+        arc_len = max(60.0, 180.0 - 100.0 * min(1.0, t * 1.3))
         return rot_deg, arc_len
 
     def get_progress(self) -> float:
@@ -121,9 +134,12 @@ class HeroPowerButton(QWidget):
             self.set_progress(target)
             return
 
+        if not connected:
+            self._disconnect_start_angle = self._settle_start_angle - 90.0
+
         self._anim.stop()
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._anim.setDuration(340 if connected else 280)
+        self._anim.setDuration(340 if connected else 320)
         self._anim.setStartValue(self._progress)
         self._anim.setEndValue(target)
         self._anim.start()
@@ -170,7 +186,12 @@ class HeroPowerButton(QWidget):
                 fill_color = QColor(self._color_accent.red(), self._color_accent.green(), self._color_accent.blue(), min(255, fill_alpha))
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QBrush(fill_color))
-                painter.drawEllipse(QPointF(cx, cy), radius, radius)
+                # Subtle outward expansion on disconnect fill
+                if not self._is_connected and not self._is_connecting:
+                    fill_r = radius * (0.94 + 0.06 * min(1.0, (1.0 - p) * 1.2))
+                else:
+                    fill_r = radius
+                painter.drawEllipse(QPointF(cx, cy), fill_r, fill_r)
 
             edge_alpha = int((1.0 - p) * 0x18)
             if edge_alpha > 0:
@@ -192,14 +213,21 @@ class HeroPowerButton(QWidget):
                 painter.drawEllipse(QPointF(cx, cy), radius - stroke_width / 2.0, radius - stroke_width / 2.0)
 
             if not self._is_connecting and not self._is_connected:
-                # Disconnecting state: outer ring stays solid and smoothly fades out
-                # without breaking into spinning arcs or reversing.
+                # Disconnecting state: the solid ring breaks open into two decaying arcs
+                # that carry forward clockwise momentum, shrink, and fade out as the inner
+                # core fills back in.
                 ring_alpha = int(p * 255)
                 if ring_alpha > 0:
-                    ring_pen = QPen(QColor(self._color_accent.red(), self._color_accent.green(), self._color_accent.blue(), min(255, ring_alpha)), stroke_width)
+                    sparkle = self._blend_color(self._color_accent, QColor(255, 255, 255), (1.0 - p) * 0.3)
+                    stroke_color = QColor(sparkle.red(), sparkle.green(), sparkle.blue(), min(255, ring_alpha))
+                    ring_pen = QPen(stroke_color, stroke_width)
+                    ring_pen.setCapStyle(Qt.RoundCap)
                     painter.setPen(ring_pen)
                     painter.setBrush(Qt.NoBrush)
-                    painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+                    rot_deg, arc_len = self._disconnect_ring_frame(p)
+                    painter.drawArc(ring_rect, int(rot_deg * 16), int(arc_len * 16))
+                    painter.drawArc(ring_rect, int((rot_deg + 180.0) * 16), int(arc_len * 16))
             elif p >= 0.988 and not self._is_connecting:
                 # Completed solid ring
                 ring_pen = QPen(self._color_accent, stroke_width)
@@ -239,17 +267,23 @@ class HeroPowerButton(QWidget):
         painter.setPen(icon_pen)
         painter.setBrush(Qt.NoBrush)
 
-        # Smooth, natural icon scaling without awkward freeze at progress 0.4
+        # Smooth, natural icon scaling
         if self._is_connected and not self._is_connecting:
-            # Gentle settling pop on connect: 0.98 -> 1.02 -> 1.0
+            # Gentle settling pop on connect: 0.98 -> 1.03 -> 1.0
             t = min(1.0, max(0.0, (progress - 0.4) / 0.6))
             if t < 0.7:
                 scale = 0.98 + 0.05 * (t / 0.7)
             else:
                 scale = 1.03 - 0.03 * ((t - 0.7) / 0.3)
         elif not self._is_connected and not self._is_connecting and progress < 1.0:
-            # Smooth scale on disconnect: 0.97 -> 1.0
-            scale = 0.97 + 0.03 * (1.0 - progress)
+            # Tactile disengage spring on disconnect: 1.0 -> 0.93 -> 1.04 -> 1.0
+            t = 1.0 - progress
+            if t < 0.35:
+                scale = 1.0 - 0.07 * (t / 0.35)
+            elif t < 0.75:
+                scale = 0.93 + 0.11 * ((t - 0.35) / 0.40)
+            else:
+                scale = 1.04 - 0.04 * ((t - 0.75) / 0.25)
         else:
             scale = 1.0
 

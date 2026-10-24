@@ -74,6 +74,7 @@ def _mock_init_app_fonts(monkeypatch):
 def _disable_sub_auto_update(monkeypatch):
     """Ensure no unmocked subscription update threads are spawned during tests."""
     from utils.subscription_manager import SubscriptionManager
+    SubscriptionManager._orig_update_all = SubscriptionManager.update_all
     monkeypatch.setattr(SubscriptionManager, "update_all", lambda self: None)
 
 

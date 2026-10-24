@@ -20,30 +20,25 @@ def _qapp_available(qapp):
     return qapp
 
 
-def test_tun_conflict_hint_and_flag():
-    eng = SingBoxEngine()
-    hint = eng._extra_error_hint(USER_FATAL)
-    assert hint is not None
-    assert "socksicle-tun" in hint
-    assert eng.pop_tun_adapter_conflict() is True
-    # Flag is consumed exactly once.
-    assert eng.pop_tun_adapter_conflict() is False
-
-
-def test_tun_hint_ignores_unrelated_lines():
-    eng = SingBoxEngine()
-    assert eng._extra_error_hint("WARN[0001] something else happened") is None
-    assert eng._extra_error_hint("FATAL failed to listen on 127.0.0.1:1080") is None
-    assert eng._extra_error_hint("") is None
-    assert eng.pop_tun_adapter_conflict() is False
-
-
 def _completed(stdout, returncode=0):
     return subprocess.CompletedProcess(args=["netsh"], returncode=returncode,
                                        stdout=stdout, stderr="")
 
 
-def test_tun_adapter_present_parsing(monkeypatch):
+def test_tun_conflict_hint_and_parsing(monkeypatch):
+    # 1. Engine conflict hints
+    eng = SingBoxEngine()
+    hint = eng._extra_error_hint(USER_FATAL)
+    assert hint is not None and "socksicle-tun" in hint
+    assert eng.pop_tun_adapter_conflict() is True
+    assert eng.pop_tun_adapter_conflict() is False  # Consumed once
+
+    assert eng._extra_error_hint("WARN[0001] something else happened") is None
+    assert eng._extra_error_hint("FATAL failed to listen on 127.0.0.1:1080") is None
+    assert eng._extra_error_hint("") is None
+    assert eng.pop_tun_adapter_conflict() is False
+
+    # 2. proc_guard adapter present parsing (Windows)
     monkeypatch.setattr(pg, "is_windows", lambda: True)
     out = ("Admin State    State          Type             Interface Name\n"
            "Enabled        Connected      Dedicated        socksicle-tun\n"
@@ -53,36 +48,32 @@ def test_tun_adapter_present_parsing(monkeypatch):
         assert pg.tun_adapter_present("SOCKsicle-TUN") is True
         assert pg.tun_adapter_present("other-tun") is False
 
-
-def test_tun_adapter_present_unknown_on_error(monkeypatch):
-    monkeypatch.setattr(pg, "is_windows", lambda: True)
+    # Error handling returns None
     with mock.patch.object(pg.subprocess, "run", return_value=_completed("", returncode=1)):
         assert pg.tun_adapter_present("socksicle-tun") is None
     with mock.patch.object(pg.subprocess, "run", side_effect=OSError("no netsh")):
         assert pg.tun_adapter_present("socksicle-tun") is None
 
-
-def test_tun_adapter_present_non_windows(monkeypatch):
+    # Non-windows returns False without running subprocess
     monkeypatch.setattr(pg, "is_windows", lambda: False)
     with mock.patch.object(pg.subprocess, "run") as run_mock:
         assert pg.tun_adapter_present("socksicle-tun") is False
         run_mock.assert_not_called()
 
 
-def test_wait_for_tun_adapter_gone(monkeypatch):
+def test_wait_for_tun_adapter_gone_scenarios(monkeypatch):
+    # 1. Adapter gone after loop
     seen = iter([True, True, False])
     monkeypatch.setattr(pg, "tun_adapter_present", lambda name: next(seen))
     with mock.patch("time.sleep", return_value=None):
         assert pg.wait_for_tun_adapter_gone("socksicle-tun", timeout=5.0) is True
 
-
-def test_wait_for_tun_adapter_gone_timeout(monkeypatch):
+    # 2. Timeout returns False
     monkeypatch.setattr(pg, "tun_adapter_present", lambda name: True)
     with mock.patch("time.sleep", return_value=None):
         assert pg.wait_for_tun_adapter_gone("socksicle-tun", timeout=0) is False
 
-
-def test_wait_for_tun_adapter_gone_unknown_proceeds(monkeypatch):
+    # 3. Unknown (None) proceeds immediately
     monkeypatch.setattr(pg, "tun_adapter_present", lambda name: None)
     assert pg.wait_for_tun_adapter_gone("socksicle-tun", timeout=5.0) is True
 
@@ -106,13 +97,12 @@ def _conflict_manager(monkeypatch):
     mgr._engine = stub
     calls = []
     monkeypatch.setattr(mgr, "toggle", lambda s, c: calls.append((s, c)))
-    # Run the scheduled retry inline instead of waiting 3s.
-    monkeypatch.setattr("utils.connection_manager.QTimer.singleShot",
-                        lambda ms, fn: fn())
+    monkeypatch.setattr("utils.connection_manager.QTimer.singleShot", lambda ms, fn: fn())
     return mgr, stub, calls
 
 
-def test_tun_conflict_schedules_single_retry(monkeypatch):
+def test_tun_conflict_retry_lifecycle(monkeypatch):
+    # 1. Schedules single retry, tears down, decrements budget
     mgr, stub, calls = _conflict_manager(monkeypatch)
     server = SimpleNamespace(name="S1")
     mgr.state = CONNECTING
@@ -127,41 +117,27 @@ def test_tun_conflict_schedules_single_retry(monkeypatch):
     assert calls == [(server, True)]
     assert mgr._tun_retries == 0
 
-
-def test_tun_retry_budget_consumed(monkeypatch):
-    mgr, stub, calls = _conflict_manager(monkeypatch)
-    server = SimpleNamespace(name="S1")
-    mgr.state = CONNECTING
-    mgr._last_connected_server = server
-    mgr._tun_retries = 1
-    stub._conflict = True
-    mgr._on_status_changed("fail", True)
-    assert len(calls) == 1
-
-    # A second failure must not schedule another retry.
+    # 2. Second failure does not schedule another retry
     mgr.state = CONNECTING
     stub._conflict = True
     mgr._on_status_changed("fail", True)
     assert len(calls) == 1
 
+    # 3. No retry without last_connected_server
+    mgr2, stub2, calls2 = _conflict_manager(monkeypatch)
+    mgr2.state = CONNECTING
+    mgr2._last_connected_server = None
+    mgr2._tun_retries = 1
+    stub2._conflict = True
+    mgr2._on_status_changed("fail", True)
+    assert calls2 == []
 
-def test_tun_no_retry_without_server(monkeypatch):
-    mgr, stub, calls = _conflict_manager(monkeypatch)
-    mgr.state = CONNECTING
-    mgr._last_connected_server = None
-    mgr._tun_retries = 1
-    stub._conflict = True
-    mgr._on_status_changed("fail", True)
-    assert calls == []
-
-
-def test_tun_no_retry_without_conflict(monkeypatch):
-    mgr, stub, calls = _conflict_manager(monkeypatch)
-    server = SimpleNamespace(name="S1")
-    mgr.state = CONNECTING
-    mgr._last_connected_server = server
-    mgr._tun_retries = 1
-    stub._conflict = False
-    mgr._on_status_changed("fail", True)
-    assert calls == []
-    assert mgr._tun_retries == 1
+    # 4. No retry without conflict flag
+    mgr3, stub3, calls3 = _conflict_manager(monkeypatch)
+    mgr3.state = CONNECTING
+    mgr3._last_connected_server = server
+    mgr3._tun_retries = 1
+    stub3._conflict = False
+    mgr3._on_status_changed("fail", True)
+    assert calls3 == []
+    assert mgr3._tun_retries == 1

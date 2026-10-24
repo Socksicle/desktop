@@ -1061,6 +1061,6 @@ class M3Theme:
             p.setColor(QPalette.ToolTipBase, QColor(bg))
             p.setColor(QPalette.ToolTipText, QColor(fg))
             QToolTip.setPalette(p)
-        except Exception:
-            pass
+        except (RuntimeError, AttributeError, TypeError) as e:
+            log.debug("Failed to apply tooltip palette: %s", e)
 

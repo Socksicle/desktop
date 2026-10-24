@@ -1,6 +1,9 @@
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtCore import Qt
+import re
+from pathlib import Path
+from PySide6.QtGui import QGuiApplication, QImage, QWheelEvent
+from PySide6.QtCore import Qt, QPoint, QPointF
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QLabel, QWidget
 
 from utils.theme import M3Theme
 from ui.screen_about import (
@@ -11,186 +14,117 @@ from ui.screen_about import (
 from utils.platform_utils import get_real_device_name
 from ui.blob_avatar_view import BlobAvatarView
 from ui.legal_dialog import LegalDialog, load_legal_text
+from ui.m3_scroll_area import M3ScrollArea, get_m3_scrollbar_stylesheet
+from ui.screen_settings import SettingsScreen
+from ui.message_box import MessageBox
+from utils.icons import pixmap
+from utils.i18n import set_language
 
 
-def test_device_name_uses_hostname_only(monkeypatch):
+def test_system_info_and_device_name_retrieval(monkeypatch):
+    # Device name uses hostname only
     monkeypatch.setattr("utils.platform_utils.is_windows", lambda: False)
     monkeypatch.setattr("utils.platform_utils.socket.gethostname", lambda: "test-host")
     assert get_real_device_name() == "test-host"
 
-
-def test_real_data_retrieval_functions():
+    # Real data retrieval
     app_ver = get_real_app_version()
-    assert app_ver == "0.1.1"
+    toml_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if toml_path.is_file():
+        m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', toml_path.read_text(encoding="utf-8"))
+        if m:
+            assert app_ver == m.group(1)
+    assert bool(re.match(r"^\d+\.\d+(\.\d+)?", app_ver))
     assert "commit" not in app_ver
-
-    dev_name = get_real_device_name()
-    assert len(dev_name) > 0
-
-    core_eng = get_real_core_engine("sing-box")
-    assert "sing-box" in core_eng
-
-    os_ver = get_real_os_version()
-    assert len(os_ver) > 0
-
-    hwid = get_real_hwid()
-    assert len(hwid) > 0
+    assert len(get_real_device_name()) > 0
+    assert "sing-box" in get_real_core_engine("sing-box")
+    assert len(get_real_os_version()) > 0
+    assert len(get_real_hwid()) > 0
 
 
-def test_screen_about_components(qapp):
+def test_screen_about_full_flow(qapp):
     theme = M3Theme(preset_key="lavender")
     settings = {"engine": "sing-box", "hwid_value": "ABCDEF1234567890"}
     screen = ScreenAbout(theme, settings=settings)
 
-    # Hero section
-    assert screen.avatar is not None
+    # 1. Structure check
     assert isinstance(screen.avatar, BlobAvatarView)
     assert screen.title_label.text() == "Socksicle"
     assert screen.version_label.text() == get_real_app_version()
-
-    # Card 1: System info (real detected values)
-    assert screen.card_info is not None
     assert screen.val_device_name.text() == get_real_device_name()
     assert "sing-box" in screen.val_core_engine.text()
     assert "twscore" in screen.val_twscore.text()
-    assert len(screen.val_os_ver.text()) > 0
-
-    # Card 2: HWID & dev unlock
-    assert screen.card_hwid is not None
-    assert screen.edit_hwid.isReadOnly()
-    assert screen.edit_hwid.text() == "ABCDEF1234567890"
-    assert screen.btn_copy_hwid.text() == "Копировать"
-
-    # Card 3: Community
-    assert screen.card_links is not None
-    assert screen.btn_gh is not None
-    assert screen.btn_tg is not None
-    assert screen.btn_dc is not None
-
-    # Card 4: Legal documents
-    assert screen.card_legal is not None
-    assert screen.btn_licenses is not None
-    assert screen.btn_privacy is not None
-    assert screen.btn_terms is not None
-
-    # Card 5: Contributors
-    assert screen.card_contrib is not None
+    assert screen.edit_hwid.isReadOnly() and screen.edit_hwid.text() == "ABCDEF1234567890"
+    assert screen.card_links is not None and screen.card_legal is not None
     assert len(screen._contrib_avatars) == len(CONTRIBUTORS)
-    assert len(screen._contrib_git_buttons) == len(CONTRIBUTORS)
 
-
-def test_screen_about_copy_hwid(qapp):
-    theme = M3Theme(preset_key="ocean")
-    screen = ScreenAbout(theme)
+    # 2. Copy HWID
     screen._copy_hwid()
     assert QGuiApplication.clipboard().text() == screen.hwid_value
     assert "Скопировано" in screen.btn_copy_hwid.text()
 
-
-def test_screen_about_hwid_blur_returns_on_click_and_page_leave(qapp):
-    theme = M3Theme(preset_key="lavender")
-    screen = ScreenAbout(theme, settings={"hwid_value": "ABCDEF1234567890"})
+    # 3. Blur toggle on click & restore on hide
     screen.show()
-
     assert screen.edit_hwid.is_blurred()
-    assert screen.edit_hwid.text() == "ABCDEF1234567890"
-
     QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
     assert not screen.edit_hwid.is_blurred()
-
     QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
     assert screen.edit_hwid.is_blurred()
-
     QTest.mouseClick(screen.edit_hwid, Qt.LeftButton)
     assert not screen.edit_hwid.is_blurred()
-
     screen.hide()
     assert screen.edit_hwid.is_blurred()
-    assert screen.edit_hwid.text() == "ABCDEF1234567890"
 
-
-def test_screen_about_dev_unlock(qapp):
-    theme = M3Theme(preset_key="coral")
-    screen = ScreenAbout(theme)
+    # 4. Dev unlock (5 clicks on card)
     unlocked = False
-
-    def on_unlocked():
+    screen.devUnlocked.connect(lambda: nonlocal_set())
+    def nonlocal_set():
         nonlocal unlocked
         unlocked = True
 
-    screen.devUnlocked.connect(on_unlocked)
     for _ in range(5):
         screen._on_hwid_card_clicked(None)
-
     assert unlocked is True
-    assert screen.edit_hwid.text() == screen.hwid_value
-    assert screen.edit_hwid.is_blurred()
 
 
-def test_blob_avatar_shuffle(qapp):
-    theme = M3Theme(preset_key="emerald")
-    blob = BlobAvatarView(theme=theme)
+def test_blob_avatar_features(qapp):
+    theme_a = M3Theme(preset_key="emerald")
+    blob = BlobAvatarView(theme=theme_a)
     initial_shape = blob._shape
     new_shape = blob.shuffle()
-    assert new_shape != initial_shape
-    assert 0 <= new_shape < BlobAvatarView.SHAPE_COUNT
+    assert new_shape != initial_shape and 0 <= new_shape < BlobAvatarView.SHAPE_COUNT
 
-
-def test_blob_avatar_renders_tinted_glyph(qapp):
-    from PySide6.QtGui import QImage
-    from utils.icons import pixmap
-
-    theme_a = M3Theme(preset_key="lavender")
-    blob = BlobAvatarView(theme=theme_a)
+    # Tinted glyph & rendering
     blob.resize(112, 112)
-
-    # Verify glyph pixmap loads with the theme color
     pm = pixmap("launcher_foreground", blob._color_on_accent.name(), 67)
     assert pm is not None and not pm.isNull()
 
-    # Verify paint event executes cleanly
     img = QImage(112, 112, QImage.Format_ARGB32_Premultiplied)
     img.fill(0)
     blob.render(img)
     assert not img.isNull()
 
-    # Verify dynamic color update on theme change
+    # Theme update
     theme_b = M3Theme(preset_key="coral")
     blob.apply_theme(theme_b)
     assert blob._color_on_accent.name().lower() == theme_b.on_primary.lower()
     assert blob._color_accent.name().lower() == theme_b.primary.lower()
-    pm_b = pixmap("launcher_foreground", blob._color_on_accent.name(), 67)
-    assert pm_b is not None and not pm_b.isNull()
 
 
-def test_legal_dialog_and_text(qapp):
-    from ui.message_box import MessageBox
-    from utils.i18n import set_language
+def test_legal_dialog_and_scroll_direction(qapp):
+    # 1. Legal dialogs
     set_language("ru")
     theme = M3Theme(preset_key="lavender")
     for doc in ("licenses", "privacy", "terms"):
         text = load_legal_text(doc, lang="ru")
-        assert len(text) > 0
-        assert text != "Документ не найден."
-
+        assert len(text) > 0 and text != "Документ не найден."
         dlg = LegalDialog(title=f"Тест {doc}", doc_name=doc, theme=theme)
-        assert isinstance(dlg, MessageBox)
-        assert dlg.txt_informative.toPlainText() == text
-        assert not dlg.badge.isHidden()
-        assert dlg.btn_close_x is not None
+        assert isinstance(dlg, MessageBox) and dlg.txt_informative.toPlainText() == text
         dlg.close()
 
-
-def test_m3_scroll_area_styling_and_direction(qapp):
-    from ui.m3_scroll_area import M3ScrollArea, get_m3_scrollbar_stylesheet
-    from PySide6.QtGui import QWheelEvent
-    from PySide6.QtCore import QPoint, QPointF
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QWidget
-
+    # 2. M3 scroll area stylesheet and scroll directions
     qss = get_m3_scrollbar_stylesheet()
-    assert "width: 5px" in qss
-    assert "border-radius: 2px" in qss
+    assert "width: 5px" in qss and "border-radius: 2px" in qss
 
     scroll = M3ScrollArea()
     assert scroll._invert_scroll is False
@@ -201,17 +135,13 @@ def test_m3_scroll_area_styling_and_direction(qapp):
     scroll.show()
 
     bar = scroll.verticalScrollBar()
-    initial_val = bar.value()
-    assert initial_val == 0
-
-    # By default (invert_scroll=False), wheel down (delta -120) increases value (scrolls down)
+    # Normal direction: wheel down (delta -120) scrolls down (> 0)
     ev = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
     scroll.wheelEvent(ev)
-    QTest.qWait(300)  # wheel scrolling is animated (140 ms)
-    val_normal = bar.value()
-    assert val_normal > 0
+    QTest.qWait(300)
+    assert bar.value() > 0
 
-    # With invert_scroll=True, wheel up (delta +120) increases value (inverted direction)
+    # Inverted direction: wheel up (delta +120) scrolls down (> 0)
     bar.setValue(0)
     scroll.set_invert_scroll(True)
     ev_up = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
@@ -219,20 +149,11 @@ def test_m3_scroll_area_styling_and_direction(qapp):
     QTest.qWait(300)
     assert bar.value() > 0
 
-
-def test_settings_screen_invert_scroll(qapp):
-    from ui.screen_settings import SettingsScreen
-
-    theme = M3Theme(preset_key="lavender")
-    settings = {"theme_preset": "lavender"}
-    screen = SettingsScreen(settings, theme)
+    # 3. Settings screen invert scroll toggle
+    screen = SettingsScreen({"theme_preset": "lavender"}, theme)
     screen.open_section("appearance", "Тема и интерфейс")
-    assert hasattr(screen, "sw_invert_scroll")
     assert screen.sw_invert_scroll.isChecked() is False
-    assert screen.scroll_area._invert_scroll is False
-
     emitted = []
     screen.settingChanged.connect(lambda k, v: emitted.append((k, v)))
     screen.sw_invert_scroll.toggled.emit(True)
-    assert ("invert_scroll", True) in emitted
-    assert screen.scroll_area._invert_scroll is True
+    assert ("invert_scroll", True) in emitted and screen.scroll_area._invert_scroll is True

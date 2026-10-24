@@ -70,45 +70,21 @@ class AnimatedRadioButton(QRadioButton):
 
     def _on_toggled(self, checked: bool):
         self.refresh_bg()
-        if checked and self.isVisible():
-            self._start_pulse()
-        else:
-            self._stop_pulse()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if self.isChecked():
-            self._start_pulse()
-
-    def hideEvent(self, event):
-        self._stop_pulse()
-        super().hideEvent(event)
+        self.update()
 
     def get_pulse_phase(self) -> float:
         return self._pulse_phase
 
     def set_pulse_phase(self, val: float):
         self._pulse_phase = float(val)
-        if self.isChecked() and self.isVisible():
-            self.update()
 
     pulsePhase = Property(float, get_pulse_phase, set_pulse_phase)
 
     def _start_pulse(self):
-        if self._pulse_anim is None:
-            self._pulse_anim = QPropertyAnimation(self, b"pulsePhase")
-            self._pulse_anim.setDuration(1600)
-            self._pulse_anim.setStartValue(0.0)
-            self._pulse_anim.setEndValue(1.0)
-            self._pulse_anim.setLoopCount(-1)
-        if self._pulse_anim.state() != QPropertyAnimation.Running:
-            self._pulse_anim.start()
+        pass
 
     def _stop_pulse(self):
-        if self._pulse_anim and self._pulse_anim.state() == QPropertyAnimation.Running:
-            self._pulse_anim.stop()
-            self._pulse_phase = 0.0
-            self.update()
+        pass
 
     def _compute_bg(self, checked: bool, hovered: bool) -> QColor:
         theme = self.theme
@@ -177,16 +153,9 @@ class AnimatedRadioButton(QRadioButton):
         dot_cx = 16.0
         dot_cy = h / 2.0
         if is_active:
-            breath = 0.5 + 0.5 * math.sin(self._pulse_phase * 2.0 * math.pi)
-            halo_r = 6.2 + 3.2 * breath
-            halo_a = int(25 + 55 * breath)
             p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), halo_a)))
-            p.drawEllipse(QPointF(dot_cx, dot_cy), halo_r, halo_r)
-
-            core_r = 4.2 + 0.4 * breath
             p.setBrush(QBrush(accent_color))
-            p.drawEllipse(QPointF(dot_cx, dot_cy), core_r, core_r)
+            p.drawEllipse(QPointF(dot_cx, dot_cy), 5.0, 5.0)
         else:
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(QColor(255, 255, 255, 30)))

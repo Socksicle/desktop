@@ -42,12 +42,14 @@ def _server_name(server) -> str:
 
 
 def _tls_insecure(server) -> bool:
-    """Explicit per-server TLS verification opt-out (imported link flag or pinned cert on older core)."""
+    """Explicit per-server TLS verification opt-out.
+
+    A certificate pin is not an opt-out: sing-box 1.14 cannot enforce it, so
+    the connection falls back to normal certificate validation (fail closed).
+    """
     return bool(
         getattr(server, "allow_insecure", False)
         or getattr(server, "insecure", False)
-        or getattr(server, "pinned_peer_cert_sha256", False)
-        or getattr(server, "pcs", False)
     )
 
 

@@ -8,12 +8,15 @@ regions as transparent holes (e.g. the QComboBox in the settings dialog).
 This module centralizes the translucent decision so dialogs do not have
 to repeat it.
 """
+import logging
 import os
 import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
+
+log = logging.getLogger(__name__)
 
 
 def platform_name() -> str:
@@ -144,8 +147,8 @@ def apply_hyprland_window_rules() -> None:
                     capture_output=True,
                     timeout=1,
                 )
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as e:
+        log.debug("Failed to apply Hyprland window rules: %s", e)
 
 
 def find_overlay_target(parent=None):

@@ -44,7 +44,7 @@ class GroupHeaderCard(QFrame):
     """Subscription group header card (item_subscription_group.xml).
 
     Layout inside the card: chevron 22px -> icon tile 36px -> name 14.5px bold
-    + subtitle 11.5px muted -> right actions 32x32 (ping / refresh / edit).
+    + subtitle 11.5px muted -> right actions 36x36 (ping / refresh / edit).
 
     The outer margins (0, 6, 0, 12) reproduce the Android item margins: header
     bottom margin 12dp, node top margin 6dp (list spacing supplies the rest).
@@ -54,12 +54,15 @@ class GroupHeaderCard(QFrame):
     pingGroupRequested = Signal(str)
     refreshRequested = Signal(str)
     editRequested = Signal(str)
+    pinToggled = Signal(str)
+    deleteRequested = Signal(str)
 
     def __init__(self, key: str, title: str, icon: str, subtitle: str = "",
-                 is_direct: bool = False, theme=None, parent=None):
+                 is_direct: bool = False, is_pinned: bool = False, theme=None, parent=None):
         super().__init__(parent)
         self.key = key
         self.is_direct = is_direct
+        self.is_pinned = is_pinned
         self.theme = theme
         self._expanded = True
         self._refreshing = False
@@ -116,26 +119,27 @@ class GroupHeaderCard(QFrame):
 
         self.btn_ping = self._action_button("speedometer", tr("group.ping_tip"), fallback="⚡")
         self.btn_refresh = self._action_button("refresh", tr("group.refresh_tip"), fallback="🔄")
-        self.btn_edit = self._action_button("pencil", tr("group.edit_tip"), fallback="✏")
+        self.btn_more = self._action_button("more_vert", tr("group.more_tip"), fallback="⋮")
+        self.btn_edit = self.btn_more
 
         layout.addWidget(self.btn_ping, 0, Qt.AlignVCenter)
         layout.addWidget(self.btn_refresh, 0, Qt.AlignVCenter)
-        layout.addWidget(self.btn_edit, 0, Qt.AlignVCenter)
+        layout.addWidget(self.btn_more, 0, Qt.AlignVCenter)
 
         if is_direct:
             self.btn_refresh.hide()
-            self.btn_edit.hide()
+            self.btn_more.hide()
 
         self.btn_ping.clicked.connect(lambda: self.pingGroupRequested.emit(self.key))
         self.btn_refresh.clicked.connect(lambda: self.refreshRequested.emit(self.key))
-        self.btn_edit.clicked.connect(lambda: self.editRequested.emit(self.key))
+        self.btn_more.clicked.connect(self._show_more_menu)
 
         if theme:
             self.apply_theme(theme)
 
     def _action_button(self, icon_name: str, tooltip: str, fallback: str = "") -> QPushButton:
         btn = QPushButton(fallback)
-        btn.setFixedSize(32, 32)
+        btn.setFixedSize(36, 36)
         btn.setFocusPolicy(Qt.NoFocus)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip(tooltip)
@@ -223,6 +227,73 @@ class GroupHeaderCard(QFrame):
             painter.end()
         return pm
 
+    def _show_more_menu(self):
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QAction
+        from utils.icons import icon
+
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_TranslucentBackground, True)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+
+        surface_high = getattr(self.theme, "surface_container_high", "#241F32") if self.theme else "#241F32"
+        text_hex = getattr(self.theme, "on_surface", "#E6E0E9") if self.theme else "#E6E0E9"
+        accent_hex = getattr(self.theme, "primary", "#D0BCFF") if self.theme else "#D0BCFF"
+
+        c = QColor(accent_hex)
+        sel_bg = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.25)"
+
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {surface_high};
+                color: {text_hex};
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 12px;
+                padding: 5px;
+            }}
+            QMenu::item {{
+                padding: 6px 14px 6px 30px;
+                border-radius: 7px;
+                font-size: 13px;
+                color: {text_hex};
+            }}
+            QMenu::icon {{
+                left: 8px;
+            }}
+            QMenu::item:selected {{
+                background-color: {sel_bg};
+                color: #FFFFFF;
+            }}
+        """)
+
+        # 1. Редактировать (с иконкой карандаша)
+        act_edit = QAction(tr("menu.edit"), self)
+        ic_edit = icon("pencil", text_hex, 16)
+        if ic_edit:
+            act_edit.setIcon(ic_edit)
+        act_edit.triggered.connect(lambda: self.editRequested.emit(self.key))
+        menu.addAction(act_edit)
+
+        # 2. Закрепить / Открепить (с иконкой пина)
+        pin_text = tr("menu.unpin") if self.is_pinned else tr("menu.pin")
+        act_pin = QAction(pin_text, self)
+        ic_pin = icon("pin", text_hex, 16)
+        if ic_pin:
+            act_pin.setIcon(ic_pin)
+        act_pin.triggered.connect(lambda: self.pinToggled.emit(self.key))
+        menu.addAction(act_pin)
+
+        # 3. Удалить (с иконкой удаления)
+        act_del = QAction(tr("menu.delete"), self)
+        ic_del = icon("delete", "#FF6B6B", 16)
+        if ic_del:
+            act_del.setIcon(ic_del)
+        act_del.triggered.connect(lambda: self.deleteRequested.emit(self.key))
+        menu.addAction(act_del)
+
+        btn_pos = self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft())
+        menu.exec(btn_pos)
+
     def set_expanded(self, expanded: bool):
         """Chevron points down when expanded, right when collapsed."""
         self._expanded = expanded
@@ -233,7 +304,7 @@ class GroupHeaderCard(QFrame):
         self.sub_label.setVisible(bool(text))
 
     def update_group(self, title: str, icon: str, subtitle: str = "",
-                     is_direct: bool = False):
+                     is_direct: bool = False, is_pinned: bool = False):
         """Rebind the card to (possibly new) group data without recreating widgets.
 
         Lets ServerListPanel.refresh() reuse cards across rebuilds. Signal
@@ -241,11 +312,12 @@ class GroupHeaderCard(QFrame):
         assign the new key alongside this call.
         """
         self.is_direct = is_direct
+        self.is_pinned = is_pinned
         self.name_label.setText(title or "")
         self.icon_label.setText(icon or "🌐")
         self.set_subtitle(subtitle or "")
         self.btn_refresh.setVisible(not is_direct)
-        self.btn_edit.setVisible(not is_direct)
+        self.btn_more.setVisible(not is_direct)
 
     def apply_theme(self, theme):
         self.theme = theme
@@ -275,8 +347,8 @@ class GroupHeaderCard(QFrame):
                 color: {muted_hex};
                 background: transparent;
                 border: none;
-                border-radius: 16px;
-                font-size: 14px;
+                border-radius: 18px;
+                font-size: 15px;
                 outline: none;
             }}
             QPushButton:hover {{
@@ -292,7 +364,7 @@ class GroupHeaderCard(QFrame):
                 font-size: 11.5px;
             }}
         """
-        for btn in (self.btn_ping, self.btn_refresh, self.btn_edit):
+        for btn in (self.btn_ping, self.btn_refresh, self.btn_more):
             btn.setStyleSheet(btn_style)
             set_button_icon(btn, btn.property("iconName"),
                             muted_hex, 18, btn.property("iconFallback") or "")

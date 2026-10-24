@@ -20,7 +20,10 @@ polkit.addRule(function(action, subject) {
         var ppid_out = polkit.spawn(["/bin/ps", "-o", "ppid=", "-p",
                                      String(subject.pid)]).toString().trim();
         var ppid = parseInt(ppid_out, 10);
-        if (!ppid) {
+        // Reject invalid PIDs and init/systemd (PID 1) adopted orphans.
+        // Without this, an unprivileged process can double-fork to be reparented
+        // to PID 1 (which holds all capabilities) and bypass authentication.
+        if (!ppid || ppid <= 1) {
             return polkit.Result.NOT_HANDLED;
         }
         var status = polkit.spawn(["/bin/grep", "-E",

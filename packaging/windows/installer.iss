@@ -3,7 +3,7 @@
 
 #define MyAppName "Socksicle"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2-rc.1"
 #endif
 #ifndef OutputBaseFilename
 #define OutputBaseFilename "Socksicle-Setup-" + MyAppVersion + "-x64"

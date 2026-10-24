@@ -3,14 +3,17 @@
 import random
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFrame, QGridLayout, QApplication, QGraphicsOpacityEffect
+    QPushButton, QFrame, QGridLayout, QApplication, QGraphicsOpacityEffect,
+    QWidget
 )
 from PySide6.QtCore import (
-    Qt, QSize, QEvent, QEventLoop, Property, QPropertyAnimation, QEasingCurve
+    Qt, QSize, QEvent, QEventLoop, Property, QPropertyAnimation, QEasingCurve,
+    QUrl
 )
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtGui import QPainter, QColor, QDesktopServices
 from ui.message_box import MessageBox
 from ui.wavy_progress_bar import WavyLinearProgressBar
+from ui.toggle_switch import AnimatedToggleSwitch
 from utils.window_utils import configure_window, find_overlay_target
 from utils.locale import format_days_remaining
 from utils.icons import icon, set_label_icon
@@ -133,26 +136,32 @@ class EditSubscriptionDialog(QDialog):
         row.addWidget(self.edit_name, 1)
         lay.addLayout(row)
 
-        if self.sub.get("url"):
-            lbl_url = QLabel(tr("sub.url_label"))
-            lbl_url.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {muted_hex}; border: none; background: transparent;")
-            lay.addWidget(lbl_url)
+        insecure_row = QWidget()
+        insecure_row.setStyleSheet("border: none; background: transparent;")
+        insecure_lay = QHBoxLayout(insecure_row)
+        insecure_lay.setContentsMargins(4, 4, 4, 4)
+        insecure_lay.setSpacing(12)
 
-            self.edit_url = QLineEdit(self.sub.get("url", ""))
-            self.edit_url.setFixedHeight(40)
-            self.edit_url.setStyleSheet(f"""
-                QLineEdit {{
-                    background-color: {surface_high};
-                    color: {text_hex};
-                    border-radius: 12px;
-                    padding: 0 12px;
-                    font-size: 12.5px;
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
-            lay.addWidget(self.edit_url)
-        else:
-            self.edit_url = None
+        insecure_lbl_box = QVBoxLayout()
+        insecure_lbl_box.setSpacing(2)
+
+        lbl_insecure_title = QLabel(tr("sub.allow_insecure"))
+        lbl_insecure_title.setStyleSheet(f"font-size: 13.5px; font-weight: bold; color: {text_hex}; background: transparent; border: none;")
+        lbl_insecure_title.setWordWrap(True)
+        insecure_lbl_box.addWidget(lbl_insecure_title)
+
+        lbl_insecure_sub = QLabel(tr("sub.allow_insecure_sub"))
+        lbl_insecure_sub.setStyleSheet(f"font-size: 11px; color: {muted_hex}; background: transparent; border: none;")
+        lbl_insecure_sub.setWordWrap(True)
+        insecure_lbl_box.addWidget(lbl_insecure_sub)
+
+        insecure_lay.addLayout(insecure_lbl_box, 1)
+
+        self.sw_insecure = AnimatedToggleSwitch(theme=self.theme)
+        self.sw_insecure.setChecked(bool(self.sub.get("allow_insecure", False)))
+        self.sw_insecure.setFixedWidth(52)
+        insecure_lay.addWidget(self.sw_insecure, 0, Qt.AlignVCenter)
+        lay.addWidget(insecure_row)
 
         traffic_meta = self.sub.get("traffic")
         expire_ts = self.sub.get("expires_at") or (traffic_meta.get("expire") if traffic_meta else 0)
@@ -179,6 +188,59 @@ class EditSubscriptionDialog(QDialog):
             lbl_exp_val.setStyleSheet(f"font-size: 12px; color: {accent_hex}; font-weight: bold; border: none; background: transparent;")
             exp_lay.addWidget(lbl_exp_val)
             lay.addWidget(exp_card)
+
+        desc = (self.sub.get("description") or self.sub.get("announce") or "").strip()
+        if desc:
+            spoiler_card = QFrame()
+            spoiler_card.setStyleSheet(f"background-color: {surface_high}; border-radius: 12px; border: none;")
+            spoiler_lay = QVBoxLayout(spoiler_card)
+            spoiler_lay.setContentsMargins(12, 8, 12, 8)
+            spoiler_lay.setSpacing(6)
+
+            header = QWidget()
+            header.setCursor(Qt.PointingHandCursor)
+            header_lay = QHBoxLayout(header)
+            header_lay.setContentsMargins(0, 0, 0, 0)
+            header_lay.setSpacing(8)
+
+            desc_icon = QLabel()
+            desc_icon.setFixedSize(16, 16)
+            desc_icon.setAlignment(Qt.AlignCenter)
+            desc_icon.setStyleSheet("border: none; background: transparent;")
+            set_label_icon(desc_icon, "description", accent_hex, 16)
+            header_lay.addWidget(desc_icon)
+
+            lbl_desc_title = QLabel(tr("sub.description_title"))
+            lbl_desc_title.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {muted_hex}; border: none; background: transparent;")
+            header_lay.addWidget(lbl_desc_title)
+            header_lay.addStretch()
+
+            lbl_arrow = QLabel()
+            lbl_arrow.setFixedSize(16, 16)
+            lbl_arrow.setAlignment(Qt.AlignCenter)
+            lbl_arrow.setStyleSheet("border: none; background: transparent;")
+            set_label_icon(lbl_arrow, "arrow_drop_down", muted_hex, 16)
+            header_lay.addWidget(lbl_arrow)
+            spoiler_lay.addWidget(header)
+
+            desc_content = QLabel(desc)
+            desc_content.setWordWrap(True)
+            desc_content.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            desc_content.setStyleSheet(f"font-size: 12px; color: {text_hex}; border: none; background: transparent; padding: 2px 0 4px 0;")
+            desc_content.setVisible(False)
+            spoiler_lay.addWidget(desc_content)
+
+            def _toggle_desc(event=None):
+                is_open = desc_content.isHidden()
+                desc_content.setVisible(is_open)
+                set_label_icon(lbl_arrow, "arrow_drop_up" if is_open else "arrow_drop_down", muted_hex, 16)
+                if self._target_parent:
+                    self._update_card_geometry()
+
+            header.mousePressEvent = _toggle_desc
+            self.spoiler_desc = desc_content
+            self.spoiler_toggle = _toggle_desc
+            lay.addWidget(spoiler_card)
 
         if traffic_meta and traffic_meta.get("total", 0) > 0:
             tr_card = QFrame()
@@ -222,78 +284,94 @@ class EditSubscriptionDialog(QDialog):
             lay.addWidget(tr_card)
 
         if self.sub.get("url"):
-            btn_share = QPushButton(tr("sub.copy_link"))
-            btn_share.setFixedHeight(38)
-            btn_share.setCursor(Qt.PointingHandCursor)
-            ic_copy = icon("copy", text_hex, 16)
-            if ic_copy:
-                btn_share.setIcon(ic_copy)
-                btn_share.setIconSize(QSize(16, 16))
-            btn_share.setStyleSheet(f"""
-                QPushButton {{
+            lbl_url = QLabel(tr("sub.url_label"))
+            lbl_url.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {muted_hex}; border: none; background: transparent;")
+            lay.addWidget(lbl_url)
+
+            self.edit_url = QLineEdit(self.sub.get("url", ""))
+            self.edit_url.setFixedHeight(40)
+            self.edit_url.setStyleSheet(f"""
+                QLineEdit {{
                     background-color: {surface_high};
                     color: {text_hex};
                     border-radius: 12px;
-                    font-weight: 600;
+                    padding: 0 12px;
                     font-size: 12.5px;
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(255, 255, 255, 0.12);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
                 }}
             """)
-            btn_share.clicked.connect(self._share_sub)
-            lay.addWidget(btn_share)
-
-        is_pinned = self.sub.get("is_pinned", False)
-        self.btn_pin = QPushButton(tr("sub.unpin") if is_pinned else tr("sub.pin"))
-        self.btn_pin.setFixedHeight(38)
-        self.btn_pin.setCursor(Qt.PointingHandCursor)
-        ic_pin = icon("pin", text_hex, 16)
-        if ic_pin:
-            self.btn_pin.setIcon(ic_pin)
-            self.btn_pin.setIconSize(QSize(16, 16))
-        self.btn_pin.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {surface_high};
-                color: {text_hex};
-                border-radius: 12px;
-                font-weight: 600;
-                font-size: 12.5px;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.12);
-            }}
-        """)
-        self.btn_pin.clicked.connect(self._toggle_pin)
-        lay.addWidget(self.btn_pin)
-
-        if self.sub.get("url"):
-            btn_del = QPushButton(tr("sub.delete"))
-            btn_del.setFixedHeight(38)
-            btn_del.setCursor(Qt.PointingHandCursor)
-            ic_del = icon("delete", "#FF6B6B", 16)
-            if ic_del:
-                btn_del.setIcon(ic_del)
-                btn_del.setIconSize(QSize(16, 16))
-            btn_del.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255, 51, 51, 0.12);
-                    color: #FF6B6B;
-                    border-radius: 12px;
-                    font-weight: 600;
-                    font-size: 12.5px;
-                    border: 1px solid rgba(255, 82, 82, 0.25);
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 51, 51, 0.22);
-                }
-            """)
-            btn_del.clicked.connect(self._delete_sub)
-            lay.addWidget(btn_del)
+            lay.addWidget(self.edit_url)
+        else:
+            self.edit_url = None
 
         act_row = QHBoxLayout()
+        act_row.setContentsMargins(0, 4, 0, 0)
+        act_row.setSpacing(8)
+
+        if self.sub.get("url"):
+            support_url = (self.sub.get("support_url") or "").strip()
+            web_url = (self.sub.get("profile_web_page_url") or "").strip()
+
+            self.btn_tg = QPushButton()
+            self.btn_tg.setFixedSize(38, 38)
+            self.btn_tg.setCursor(Qt.PointingHandCursor if support_url else Qt.ArrowCursor)
+            self.btn_tg.setEnabled(bool(support_url))
+            self.btn_tg.setToolTip(f"{tr('sub.support_tg')}: {support_url}" if support_url else tr("sub.no_support_url"))
+            ic_tg = icon("telegram", text_hex if support_url else muted_hex, 20)
+            if ic_tg:
+                self.btn_tg.setIcon(ic_tg)
+                self.btn_tg.setIconSize(QSize(20, 20))
+            self.btn_tg.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    border: none;
+                    border-radius: 10px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.08);
+                }
+                QPushButton:pressed {
+                    background-color: rgba(255, 255, 255, 0.14);
+                }
+                QPushButton:disabled {
+                    background: transparent;
+                    border: none;
+                }
+            """)
+            if support_url:
+                self.btn_tg.clicked.connect(lambda: self._open_external_url(support_url))
+            act_row.addWidget(self.btn_tg)
+
+            self.btn_web = QPushButton()
+            self.btn_web.setFixedSize(38, 38)
+            self.btn_web.setCursor(Qt.PointingHandCursor if web_url else Qt.ArrowCursor)
+            self.btn_web.setEnabled(bool(web_url))
+            self.btn_web.setToolTip(f"{tr('sub.website')}: {web_url}" if web_url else tr("sub.no_website_url"))
+            ic_web = icon("web", text_hex if web_url else muted_hex, 20)
+            if ic_web:
+                self.btn_web.setIcon(ic_web)
+                self.btn_web.setIconSize(QSize(20, 20))
+            self.btn_web.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    border: none;
+                    border-radius: 10px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.08);
+                }
+                QPushButton:pressed {
+                    background-color: rgba(255, 255, 255, 0.14);
+                }
+                QPushButton:disabled {
+                    background: transparent;
+                    border: none;
+                }
+            """)
+            if web_url:
+                self.btn_web.clicked.connect(lambda: self._open_external_url(web_url))
+            act_row.addWidget(self.btn_web)
+
         act_row.addStretch()
 
         btn_cancel = QPushButton(tr("dlg.cancel"))
@@ -515,6 +593,16 @@ class EditSubscriptionDialog(QDialog):
         self.btn_icon.setText(emoji)
         dlg.accept()
 
+    def _open_external_url(self, raw_url: str):
+        if not raw_url:
+            return
+        url_str = raw_url.strip()
+        if url_str.startswith("@"):
+            url_str = f"https://t.me/{url_str[1:]}"
+        elif not url_str.startswith(("http://", "https://", "tg://")):
+            url_str = f"https://{url_str}"
+        QDesktopServices.openUrl(QUrl(url_str))
+
     def _share_sub(self):
         url = self.sub.get("url", "")
         if url:
@@ -524,12 +612,14 @@ class EditSubscriptionDialog(QDialog):
     def _toggle_pin(self):
         current = not self.sub.get("is_pinned", False)
         self.sub["is_pinned"] = current
-        self.btn_pin.setText(tr("sub.unpin") if current else tr("sub.pin"))
-        ic_pin = icon("pin", getattr(self.theme, "on_surface", "#E6E0E9"), 16)
-        if ic_pin:
-            self.btn_pin.setIcon(ic_pin)
-            self.btn_pin.setIconSize(QSize(16, 16))
-        self.manager.set_pinned(self.sub.get("name", ""), current)
+        if getattr(self, "btn_pin", None):
+            self.btn_pin.setText(tr("sub.unpin") if current else tr("sub.pin"))
+            ic_pin = icon("pin", getattr(self.theme, "on_surface", "#E6E0E9"), 16)
+            if ic_pin:
+                self.btn_pin.setIcon(ic_pin)
+                self.btn_pin.setIconSize(QSize(16, 16))
+        if self.manager:
+            self.manager.set_pinned(self.sub.get("name", ""), current)
 
     def _delete_sub(self):
         reply = MessageBox.question(
@@ -552,6 +642,10 @@ class EditSubscriptionDialog(QDialog):
 
         new_url = self.edit_url.text().strip() if self.edit_url else ""
         old_name = self.sub.get("name", "")
+        allow_insecure = self.sw_insecure.isChecked() if hasattr(self, "sw_insecure") else None
 
-        self.manager.rename(old_name, new_name, self.selected_icon, new_url)
+        if self.manager:
+            self.manager.rename(old_name, new_name, self.selected_icon, new_url, allow_insecure=allow_insecure)
+        if allow_insecure is not None:
+            self.sub["allow_insecure"] = allow_insecure
         self.accept()

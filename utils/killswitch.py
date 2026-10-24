@@ -13,7 +13,8 @@ import socket
 import subprocess
 import threading
 from .i18n import tr
-from .platform_utils import is_windows, is_linux, is_admin
+from .linux_tun import TUN_INTERFACE_NAME
+from .platform_utils import is_windows, is_linux, is_admin, elevate_restart
 
 log = logging.getLogger("killswitch")
 
@@ -100,10 +101,8 @@ class KillSwitchManager:
         self._active = False
         self._engine_allowed = False
         self.last_error = ""
-        self._registered_atexit = False
-        if not self._registered_atexit:
-            atexit.register(self.cleanup)
-            self._registered_atexit = True
+        self._registered_atexit = True
+        atexit.register(self.cleanup)
 
     @property
     def is_active(self) -> bool:
@@ -111,7 +110,7 @@ class KillSwitchManager:
 
     # ---- public lifecycle -------------------------------------------------
 
-    def clean_stale_rules(self) -> bool:
+    def clean_stale_rules(self, elevate: bool = True) -> bool:
         """Restore the firewall policy and remove leftover rules.
 
         Returns False when the previous policy could not be restored; in that
@@ -121,9 +120,13 @@ class KillSwitchManager:
         if is_windows():
             if not is_admin():
                 if self._state_path().exists():
+                    if elevate and elevate_restart():
+                        return True
+                    self.last_error = tr("killswitch.reason_admin")
                     log.warning(
                         "A previous Kill Switch session left the firewall policy "
                         "blocked; start Socksicle as Administrator to restore it")
+                    return False
                 return True
             log.info("Checking and cleaning stale Socksicle Kill Switch rules...")
             if not self._restore_windows_policy():
@@ -133,7 +136,13 @@ class KillSwitchManager:
             return True
         if is_linux():
             if not is_admin():
-                return True
+                # nftables requires root even to list the table, so a stale
+                # drop policy cannot be detected or removed from here.
+                log.warning(
+                    "Cannot verify or remove a previous Kill Switch table "
+                    "without root; if network access is blocked, start "
+                    "Socksicle as root to clean it")
+                return False
             self._delete_linux_table()
             self._engine_allowed = False
             return True
@@ -216,7 +225,7 @@ class KillSwitchManager:
         """Teardown handler on application shutdown."""
         with self._lock:
             if self._active or is_admin():
-                if self.clean_stale_rules():
+                if self.clean_stale_rules(elevate=False):
                     self._active = False
 
     # ---- Windows ----------------------------------------------------------
@@ -454,7 +463,8 @@ class KillSwitchManager:
             (f"add chain inet {_LINUX_TABLE} {_LINUX_CHAIN} "
              "{ type filter hook output priority 0; policy drop; }"),
             f'add rule inet {_LINUX_TABLE} {_LINUX_CHAIN} oifname "lo" accept',
-            f'add rule inet {_LINUX_TABLE} {_LINUX_CHAIN} oifname "socksicle-tun" accept',
+            (f"add rule inet {_LINUX_TABLE} {_LINUX_CHAIN} "
+             f'oifname "{TUN_INTERFACE_NAME}" accept'),
             (f"add rule inet {_LINUX_TABLE} {_LINUX_CHAIN} "
              f"ip daddr {{ {', '.join(_LAN_RANGES_V4)} }} accept"),
             (f"add rule inet {_LINUX_TABLE} {_LINUX_CHAIN} "

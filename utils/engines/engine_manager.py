@@ -71,14 +71,14 @@ def resolve_engine_for_server(server, settings: dict) -> EngineType:
     transport = getattr(server, "transport", "tcp") or "tcp"
     transport_val = str(transport).lower().strip() if transport else ""
 
+    if settings.get("tun_mode", False):
+        return EngineType.SINGBOX
+
     if proto_val in ("hysteria2", "tuic", "trojan"):
         return EngineType.SINGBOX
 
     if transport_val in ("xhttp", "splithttp", "kcp"):
         return EngineType.XRAY
-
-    if settings.get("tun_mode", False):
-        return EngineType.SINGBOX
 
     if engine_key in ("sing-box", "xray"):
         return EngineType(engine_key)
@@ -139,7 +139,7 @@ def cleanup_stale_core_processes() -> list[str]:
     actions performed (empty when there was nothing to clean).
     """
     from .proc_guard import cleanup_stale_engines
-    return cleanup_stale_engines([et.value for et in _ENGINES])
+    return cleanup_stale_engines([et.value for et in _ENGINES] + ["xray-bridge"])
 
 
 # Auto-register all engines on import

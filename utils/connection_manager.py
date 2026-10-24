@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot, QThreadPool, QRunnable
 
 from .geo_utils import fetch_ip_info_via_proxy
 from .i18n import tr
-from .ping import socks5_proxy_ready, ProxyPingJob, PING_PROBE_HOST, parse_ping_url, DEFAULT_PING_TIMEOUT
+from .ping import socks5_proxy_ready, ProxyPingJob, parse_ping_url, DEFAULT_PING_TIMEOUT
 from .engines.engine_manager import get_current_engine
 from .engines.base import DEFAULT_LOCAL_PORT, check_local_port
 from .engines.singbox_config import (
@@ -149,6 +149,8 @@ class ConnectionManager(QObject):
             self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
         if hasattr(self._engine, "block_udp"):
             self._engine.block_udp = bool(self._settings.get("block_udp", False))
+        if hasattr(self._engine, "bypass_lan"):
+            self._engine.bypass_lan = bool(self._settings.get("bypass_lan", True))
         if hasattr(self._engine, "tls_fragment"):
             self._engine.tls_fragment = bool(self._settings.get("tls_fragment", False))
         if hasattr(self._engine, "mux_enabled"):
@@ -182,7 +184,7 @@ class ConnectionManager(QObject):
 
     def switch_engine(self, engine):
         """Switch to a different engine instance."""
-        if self.is_connected:
+        if self.is_connected or self.is_connecting:
             self.disconnect()
         old_port = getattr(self._engine, "local_port", DEFAULT_LOCAL_PORT)
         old = self._engine
@@ -208,7 +210,7 @@ class ConnectionManager(QObject):
         # this carry-over a dropped engine takes custom_dns and the toggles
         # with it and the replacement silently falls back to defaults.
         for attr in ("custom_dns", "hy2_insecure", "block_udp", "tun_mode",
-                     "tls_fragment", "mux_enabled", "mux_protocol",
+                     "bypass_lan", "tls_fragment", "mux_enabled", "mux_protocol",
                      "mux_max_connections"):
             if hasattr(old, attr) and hasattr(engine, attr):
                 setattr(engine, attr, getattr(old, attr))
@@ -288,6 +290,8 @@ class ConnectionManager(QObject):
                 self._engine.hy2_insecure = bool(self._settings.get("hy2_insecure", False))
             if hasattr(self._engine, "block_udp"):
                 self._engine.block_udp = bool(self._settings.get("block_udp", False))
+            if hasattr(self._engine, "bypass_lan"):
+                self._engine.bypass_lan = bool(self._settings.get("bypass_lan", True))
             if hasattr(self._engine, "tls_fragment"):
                 self._engine.tls_fragment = bool(self._settings.get("tls_fragment", False))
             if hasattr(self._engine, "mux_enabled"):
@@ -304,7 +308,8 @@ class ConnectionManager(QObject):
             self._generation += 1
             curr_gen = self._generation
 
-            if self._engine.start(server):
+            engine = self._engine
+            if engine.start(server):
                 # Verify that no disconnect/new connect happened while start() was executing
                 if self.state == CONNECTING and self._generation == curr_gen:
                     # Re-arm the connecting UI: a hot-reconnect emits
@@ -314,7 +319,10 @@ class ConnectionManager(QObject):
                     self.startProbeRequested.emit()
                     return True
                 else:
-                    self._engine.teardown()
+                    # switch_engine() may have replaced self._engine while
+                    # start() was running; stop the instance that actually
+                    # started, not the replacement.
+                    engine.teardown()
                     return False
             self.state = DISCONNECTED
             self.is_connecting = False
@@ -335,14 +343,17 @@ class ConnectionManager(QObject):
         self.probe_timer.stop()
         self.ping_timer.stop()
 
-    def disconnect(self):
-        """Disconnect at any stage: failed start, crash, or mid-connect."""
-        self._probing_in_flight = False
+    def _disable_killswitch(self):
         try:
             from .killswitch import KillSwitchManager
             KillSwitchManager.get_instance().disable()
         except Exception as e:
-            log.debug("Kill switch disable failed on disconnect: %s", e)
+            log.debug("Kill switch disable failed: %s", e)
+
+    def disconnect(self):
+        """Disconnect at any stage: failed start, crash, or mid-connect."""
+        self._probing_in_flight = False
+        self._disable_killswitch()
         self.stopTimersRequested.emit()
         self.state = DISCONNECTED
         self.is_connecting = False
@@ -432,11 +443,7 @@ class ConnectionManager(QObject):
 
     def _fail(self, msg):
         self._probing_in_flight = False
-        try:
-            from .killswitch import KillSwitchManager
-            KillSwitchManager.get_instance().disable()
-        except (ImportError, AttributeError, OSError, RuntimeError) as e:
-            log.debug("Kill switch disable failed on probe failure: %s", e)
+        self._disable_killswitch()
         self.probe_timer.stop()
         self.ping_timer.stop()
         self.state = DISCONNECTED
@@ -447,6 +454,7 @@ class ConnectionManager(QObject):
     def _handle_process_stopped(self):
         self._probing_in_flight = False
         if self.state == CONNECTING:
+            self._disable_killswitch()
             self.probe_timer.stop()
             self._engine.teardown()
             self.state = DISCONNECTED
@@ -475,6 +483,7 @@ class ConnectionManager(QObject):
                     n=self._auto_reconnect_attempts, max=self.MAX_AUTO_RECONNECTS), False)
                 QTimer.singleShot(150, lambda s=last_server: self.toggle(s, True))
             else:
+                self._disable_killswitch()
                 self.is_connecting = False
                 self._last_connected_server = None
                 self._auto_reconnect_attempts = 0
@@ -489,6 +498,7 @@ class ConnectionManager(QObject):
             if self.state == CONNECTED and self._last_connected_server and self._auto_reconnect_attempts < self.MAX_AUTO_RECONNECTS:
                 pass
             else:
+                self._disable_killswitch()
                 self.probe_timer.stop()
                 self.ping_timer.stop()
                 self.state = DISCONNECTED
@@ -554,7 +564,12 @@ class ConnectionManager(QObject):
         gen = self._generation
         timeout = float(self._settings.get("ping_timeout", DEFAULT_PING_TIMEOUT))
         url = self._settings.get("ping_url") or None
-        host, _, _, _ = parse_ping_url(url)
+        try:
+            host, _, _, _ = parse_ping_url(url)
+        except ValueError as e:
+            log.warning("Invalid ping URL, active ping skipped: %s", e)
+            self._on_ping_result(gen, None)
+            return
         QThreadPool.globalInstance().start(ProxyPingJob(
             host, int(self.local_port),
             lambda ms, gen=gen: self._on_ping_result(gen, ms),

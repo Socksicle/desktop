@@ -3,7 +3,7 @@ import functools
 import ipaddress
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .i18n import tr
@@ -55,6 +55,8 @@ class Server:
     vmess_security: str = "auto"
     path: str = ""
     host_header: str = ""
+    xhttp_mode: str = "auto"
+    alpn: list[str] = field(default_factory=list)
     is_private: bool = False
     insecure: bool = False
     pinned_peer_cert_sha256: str = ""
@@ -154,9 +156,17 @@ class Server:
         pcs = data.get('pinned_peer_cert_sha256', '') or ''
         pcn = data.get('verify_peer_cert_by_name', '') or ''
         sec = data.get('security', 'none')
+        xhttp_mode = data.get('xhttp_mode', 'auto') or 'auto'
+        alpn_raw = data.get('alpn', [])
+        if isinstance(alpn_raw, str):
+            alpn = [p.strip() for p in alpn_raw.split(',') if p.strip()]
+        elif isinstance(alpn_raw, list):
+            alpn = [str(p).strip() for p in alpn_raw if str(p).strip()]
+        else:
+            alpn = []
         key = data.get('key', '')
         if key and '://' in key:
-            if not pcs and ('pcs=' in key or 'pinSHA256=' in key or 'pinnedPeerCertSha256=' in key):
+            if not pcs and ('pcs=' in key or 'pinSHA256=' in key or 'pinnedPeerCertSha256=' in key or 'pinned_peer_cert_sha256=' in key):
                 try:
                     from .link_parser import parse_link
                     parsed = parse_link(key)
@@ -167,10 +177,42 @@ class Server:
                             pcn = parsed.verify_peer_cert_by_name
                         if sec == 'tls' and parsed.security == 'none':
                             sec = 'none'
-                except Exception:
-                    pass
+                        if xhttp_mode == 'auto' and getattr(parsed, 'xhttp_mode', 'auto') != 'auto':
+                            xhttp_mode = parsed.xhttp_mode
+                        if not alpn and getattr(parsed, 'alpn', None):
+                            alpn = list(parsed.alpn)
+                except Exception as e:
+                    log.warning("Failed to parse link while restoring TLS pin from key: %s", e)
+                if not pcs:
+                    try:
+                        from urllib.parse import parse_qs, unquote
+                        if '?' in key:
+                            q = key.split('?', 1)[1].split('#', 1)[0]
+                            qp = parse_qs(q)
+                            for pin_k in ('pcs', 'pinSHA256', 'pinnedPeerCertSha256', 'pinned_peer_cert_sha256'):
+                                if pin_k in qp and qp[pin_k]:
+                                    pcs = unquote(qp[pin_k][0].strip())
+                                    break
+                    except Exception as e:
+                        log.warning("Failed to extract TLS pin parameter from query string: %s", e)
+                if not pcs:
+                    log.warning("Server key specifies TLS pinning but pin could not be restored: %s", key)
             elif sec == 'tls' and 'security=none' in key:
                 sec = 'none'
+            if (xhttp_mode == 'auto' or not alpn) and ('mode=' in key or 'alpn=' in key):
+                try:
+                    from urllib.parse import parse_qs
+                    if '?' in key:
+                        q = key.split('?', 1)[1]
+                        if '#' in q:
+                            q = q.split('#', 1)[0]
+                        qp = parse_qs(q)
+                        if xhttp_mode == 'auto' and 'mode' in qp:
+                            xhttp_mode = qp['mode'][0]
+                        if not alpn and 'alpn' in qp:
+                            alpn = [p.strip() for p in qp['alpn'][0].split(',') if p.strip()]
+                except Exception as e:
+                    log.debug("Failed to extract mode/alpn parameters from query string: %s", e)
 
         return cls(
             key=key,
@@ -210,6 +252,8 @@ class Server:
             expires_at=expires_at,
             flag_emoji=data.get('flag_emoji', '🌐'),
             country_code=data.get('country_code', 'UN'),
+            xhttp_mode=xhttp_mode,
+            alpn=alpn,
         )
 
     def to_dict(self):
@@ -284,6 +328,10 @@ class Server:
             d["flag_emoji"] = self.flag_emoji
         if self.country_code and self.country_code != "UN":
             d["country_code"] = self.country_code
+        if self.xhttp_mode and self.xhttp_mode != "auto":
+            d["xhttp_mode"] = self.xhttp_mode
+        if self.alpn:
+            d["alpn"] = list(self.alpn)
         return d
 
     @property

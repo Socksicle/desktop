@@ -77,10 +77,13 @@ def decode_ss_link(ss_link):
         if ':' in decoded and '@' in decoded:
             method, rest = decoded.split(':', 1)
             password, server_port = rest.rsplit('@', 1)
-            server, port = server_port.rsplit(':', 1)
+            server, port_str = server_port.rsplit(':', 1)
+            port = int(port_str)
+            if not 1 <= port <= 65535:
+                return None
             return {
                 'server': server,
-                'port': int(port),
+                'port': port,
                 'method': method,
                 'password': password,
                 'tag': tag,
@@ -95,7 +98,7 @@ def decode_ss_link(ss_link):
         server = parsed.hostname
         port = parsed.port
 
-        if not server or not port:
+        if not server or not port or not (1 <= port <= 65535):
             return None
 
         # urlparse splits method:password into username:password when ':' is present

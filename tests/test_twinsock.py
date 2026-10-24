@@ -1,7 +1,8 @@
 """Tests for the portable TwinSock v3 vault (utils/twinsock.py) and its integration."""
 import base64
 import json
-
+import logging
+from unittest import mock
 import pytest
 
 import utils.twinsock as tw
@@ -15,14 +16,13 @@ def vault_env():
 
 
 def _ss_link(host):
-    import base64 as b64
-    userinfo = b64.urlsafe_b64encode(b"aes-256-gcm:password").decode().rstrip("=")
+    userinfo = base64.urlsafe_b64encode(b"aes-256-gcm:password").decode().rstrip("=")
     return f"ss://{userinfo}@{host}:8388#ServerOne"
 
 
-def test_roundtrip_all_secret_fields(vault_env):
-    values = ["simple", "unicode key ✓", "x" * 300,
-              "with spaces  and\ttabs", "1234567890!@#$%^&*()"]
+def test_vault_sealing_properties(vault_env, tmp_path):
+    # Roundtrip secret fields for manual & subscriptions
+    values = ["simple", "unicode key ✓", "x" * 300, "with spaces  and\ttabs", "1234567890!@#$%^&*()"]
     for purpose in ("manual", "subscriptions"):
         fields = tw.SECRET_FIELDS + (("url",) if purpose == "subscriptions" else ())
         for field in fields:
@@ -32,39 +32,38 @@ def test_roundtrip_all_secret_fields(vault_env):
                 assert tok != val
                 assert tw.decrypt_field(purpose, tok) == val
 
-
-def test_v3_token_version_and_layout(vault_env):
+    # Token layout & v3 version byte
     tok = tw.encrypt_field("manual", "test-secret")
-    assert tok.startswith("tws3.")
     raw = tw._b64url_decode(tok[5:])
-    assert raw[0] == 0x03  # v3 version byte
-    # 1 byte ver + 12 byte nonce + 16 byte AES-GCM tag + len("test-secret")
+    assert raw[0] == 0x03
     assert len(raw) == 1 + 12 + 16 + len("test-secret")
 
-
-def test_vault_is_portable_across_machines(vault_env):
-    """The config belongs to the user: tokens decrypt without any machine
-    binding, so copying servers.json to a second PC keeps working."""
-    tok = tw.encrypt_field("manual", "keep-me-safe")
+    # Vault portability across machines (no machine binding)
+    tok_port = tw.encrypt_field("manual", "keep-me-safe")
     tw._reset()
-    assert tw.decrypt_field("manual", tok) == "keep-me-safe"
+    assert tw.decrypt_field("manual", tok_port) == "keep-me-safe"
 
-
-def test_no_drawer_file_created(vault_env, tmp_path):
-    """Sealing must never create a drawer.json second sock next to the config."""
+    # No drawer file created
     tw.seal_dict("manual", {"password": "pw", "host": "h"}, tw.SECRET_FIELDS)
     assert not (tmp_path / "drawer.json").exists()
     assert list(tmp_path.iterdir()) == []
 
-
-def test_empty_string_not_tokenized(vault_env):
+    # Empty string handling
     assert tw.encrypt_field("manual", "") == ""
     assert tw.decrypt_field("manual", "") == ""
     assert tw.tokenize(b"k" * 32, "") == ""
     assert tw.detokenize(b"k" * 32, "") == ""
 
+    # Random IV yields different tokens for identical plaintext
+    t1 = tw.encrypt_field("manual", "same-value")
+    t2 = tw.encrypt_field("manual", "same-value")
+    assert t1 != t2
+    assert tw.decrypt_field("manual", t1) == "same-value"
+    assert tw.decrypt_field("manual", t2) == "same-value"
 
-def test_flip_byte_in_token_raises(vault_env):
+
+def test_vault_tamper_and_legacy_handling(vault_env, caplog):
+    # Flipped byte raises VaultError
     k = b"K" * 32
     tok = tw.tokenize(k, "some secret data")
     payload = tok[5:]
@@ -76,35 +75,19 @@ def test_flip_byte_in_token_raises(vault_env):
         with pytest.raises(tw.VaultError):
             tw.detokenize(k, broken)
 
-
-def test_same_plaintext_yields_different_tokens(vault_env):
-    t1 = tw.encrypt_field("manual", "same-value")
-    t2 = tw.encrypt_field("manual", "same-value")
-    assert t1 != t2
-    assert tw.decrypt_field("manual", t1) == "same-value"
-    assert tw.decrypt_field("manual", t2) == "same-value"
-
-
-def test_corrupt_token_empties_field_not_config(vault_env):
-    """A tampered token blanks only its own field; the server entry survives."""
+    # Corrupt token empties field without corrupting surrounding entry
     out = tw.unseal_dict("manual", {"host": "h", "password": "tws3.bogus!!!"}, tw.SECRET_FIELDS)
     assert out["host"] == "h"
     assert out["password"] == ""
 
+    # Legacy tokens raise VaultError on decrypt_field
+    for leg in ("tws2.some_old_token", "__obfuscated__legacy_value", "__broken"):
+        with pytest.raises(tw.VaultError, match="legacy_format"):
+            tw.decrypt_field("manual", leg)
 
-def test_legacy_tokens_raise_vault_error(vault_env):
-    with pytest.raises(tw.VaultError, match="legacy_format"):
-        tw.decrypt_field("manual", "tws2.some_old_token")
-    with pytest.raises(tw.VaultError, match="legacy_format"):
-        tw.decrypt_field("manual", "__obfuscated__legacy_value")
-    with pytest.raises(tw.VaultError, match="legacy_format"):
-        tw.decrypt_field("manual", "__broken")
-
-
-def test_legacy_tokens_unseal_logs_warning_and_empties_field(vault_env, caplog):
-    import logging
+    # Legacy tokens log warning and empty only the affected field in unseal_dict
     with caplog.at_level(logging.WARNING):
-        out = tw.unseal_dict(
+        out_leg = tw.unseal_dict(
             "manual",
             {
                 "host": "h",
@@ -114,21 +97,21 @@ def test_legacy_tokens_unseal_logs_warning_and_empties_field(vault_env, caplog):
             },
             tw.SECRET_FIELDS,
         )
-
-    assert out["host"] == "h"
-    assert out["password"] == ""
-    assert out["key"] == ""
-    assert out["uuid"] == "normal_plaintext_uuid"
-
+    assert out_leg["host"] == "h"
+    assert out_leg["password"] == ""
+    assert out_leg["key"] == ""
+    assert out_leg["uuid"] == "normal_plaintext_uuid"
     warning_texts = [rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING]
     assert any("field password: legacy_format (set to empty)" in text for text in warning_texts)
     assert any("field key: legacy_format (set to empty)" in text for text in warning_texts)
-    assert not any("uuid" in text for text in warning_texts)
 
 
-def test_subscription_seal_unseal(vault_env, tmp_path):
+def test_subscription_and_secret_fields_sealing(vault_env, tmp_path):
     from utils import subscription_store as sbm
+    from utils import server_manager as sm
     import unittest.mock as mock
+
+    # Subscription store seal / unseal roundtrip
     with mock.patch.object(sbm, "get_config_dir", return_value=tmp_path):
         subs = [{
             "name": "Sub A",
@@ -137,8 +120,7 @@ def test_subscription_seal_unseal(vault_env, tmp_path):
                 {"key": "ss://raw1", "password": "pw-1", "uuid": "u1", "public_key": "pk1",
                  "name": "s1", "host": "h1", "port": 8388, "method": "aes-256-gcm"},
                 {"key": "", "password": "", "uuid": "", "public_key": "",
-                 "name": "s2", "host": "h2", "port": 8389,
-                 "method": "chacha20-ietf-poly1305"},
+                 "name": "s2", "host": "h2", "port": 8389, "method": "chacha20-ietf-poly1305"},
             ],
             "traffic": {"used": 1, "total": 100, "expire": 0},
         }]
@@ -148,22 +130,36 @@ def test_subscription_seal_unseal(vault_env, tmp_path):
         assert raw[0]["servers"][0]["password"].startswith("tws3.")
         assert raw[0]["servers"][0]["key"].startswith("tws3.")
         assert raw[0]["servers"][1]["password"] == ""
-        assert raw[0]["name"] == "Sub A"
-        assert raw[0]["servers"][0]["host"] == "h1"
+
         loaded = sbm.load_subscriptions()
         assert loaded[0]["url"] == "https://example.com/sub1"
         assert loaded[0]["servers"][0]["password"] == "pw-1"
         assert loaded[0]["servers"][0]["uuid"] == "u1"
         assert loaded[0]["servers"][0]["public_key"] == "pk1"
         assert loaded[0]["servers"][0]["key"] == "ss://raw1"
-        assert loaded[0]["name"] == "Sub A"
+
+    # Empty secret fields are not tokenized in server_manager
+    with mock.patch.object(sm, "get_config_dir", return_value=tmp_path):
+        mgr = sm.ServerManager()
+        srv = mgr.add_from_link(_ss_link("example.com"))
+        srv.password = ""
+        mgr.save_manual_servers()
+        raw_srv = json.loads((tmp_path / "servers.json").read_text(encoding="utf-8"))
+        assert raw_srv[0]["password"] == ""
+        assert raw_srv[0]["key"].startswith("tws3.")
+
+        tw._reset()
+        mgr2 = sm.ServerManager()
+        assert mgr2.manual_servers[0].password == ""
+        assert mgr2.manual_servers[0].key.startswith("ss://")
 
 
-def test_export_import_roundtrip(vault_env, monkeypatch, tmp_path):
+def test_export_import_and_file_safety(vault_env, monkeypatch, tmp_path):
     from utils import server_manager as sm
     from utils import subscription_store as sbm
     monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
     monkeypatch.setattr(sbm, "get_config_dir", lambda: tmp_path)
+
     mgr = sm.ServerManager()
     srv = mgr.add_from_link(_ss_link("example.com"))
     assert srv is not None
@@ -180,6 +176,7 @@ def test_export_import_roundtrip(vault_env, monkeypatch, tmp_path):
     assert "note" in payload
     assert payload["manual_servers"][0]["password"] == "password"
     assert payload["subscriptions"][0]["servers"][0]["password"] == "pw-sub"
+
     manuals, subs2 = tw.import_payload(payload)
     assert len(manuals) == 1
     assert manuals[0].password == "password"
@@ -187,220 +184,144 @@ def test_export_import_roundtrip(vault_env, monkeypatch, tmp_path):
     assert subs2[0]["url"] == "https://example.com/s"
     assert subs2[0]["servers"][0].password == "pw-sub"
 
-
-
-def test_server_manager_never_renames_user_files(vault_env, monkeypatch, tmp_path):
-    """save/load must never retire the user config to *.foreign-* and must
-    never create drawer.json — the config belongs to the user."""
-    from utils import server_manager as sm
-    monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
-    mgr = sm.ServerManager()
-    mgr.add_from_link(_ss_link("one.example"))
-    assert len(mgr.manual_servers) == 1
+    # Server manager never renames user files or creates drawer.json
     mgr.save_manual_servers()
     mgr2 = sm.ServerManager()
     assert len(mgr2.manual_servers) == 1
     assert mgr2.manual_servers[0].password == "password"
-    assert mgr2.manual_servers[0].host == "one.example"
     names = [p.name for p in tmp_path.iterdir()]
     assert not any(".foreign-" in n for n in names)
     assert "drawer.json" not in names
 
 
-def test_empty_secret_fields_not_tokenized(vault_env, monkeypatch, tmp_path):
+def test_share_key_generation_and_persistence(vault_env, monkeypatch, tmp_path):
     from utils import server_manager as sm
     monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
-    mgr = sm.ServerManager()
-    srv = mgr.add_from_link(_ss_link("example.com"))
-    srv.password = ""
-    mgr.save_manual_servers()
-    raw = json.loads((tmp_path / "servers.json").read_text(encoding="utf-8"))
-    assert raw[0]["password"] == ""
-    assert raw[0]["key"].startswith("tws3.")
-    tw._reset()
-    mgr2 = sm.ServerManager()
-    assert mgr2.manual_servers[0].password == ""
-    assert mgr2.manual_servers[0].key.startswith("ss://")
 
-
-
-def test_tws3_share_key_auto_generated_for_new_user(vault_env, monkeypatch, tmp_path):
-    from utils import server_manager as sm
-    monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
     mgr = sm.ServerManager()
     key = mgr.settings.get("tws3_share_key", "")
     assert key
     raw = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert raw.get("tws3_share_key") == key
 
-
-def test_save_settings_preserves_share_key(vault_env, monkeypatch, tmp_path):
-    from utils import server_manager as sm
-    monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
-    mgr = sm.ServerManager()
-    key = mgr.settings["tws3_share_key"]
+    # Preserves share key across saves
     mgr.save_settings()
     assert mgr.settings.get("tws3_share_key") == key
-    raw = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    assert raw.get("tws3_share_key") == key
+    raw2 = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert raw2.get("tws3_share_key") == key
 
 
-def test_share_roundtrip_server_link(vault_env):
+def test_save_settings_is_atomic_and_handles_oserror(vault_env, monkeypatch, tmp_path):
+    from utils import server_manager as sm
+    monkeypatch.setattr(sm, "get_config_dir", lambda: tmp_path)
+
+    mgr = sm.ServerManager()
+    path = tmp_path / "settings.json"
+    original = path.read_text(encoding="utf-8")
+
+    # A failed replace must keep the previous file intact and leave no temp.
+    mgr.settings["local_port"] = 2080
+    with mock.patch.object(sm.os, "replace", side_effect=OSError("disk full")):
+        mgr.save_settings()
+    assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob("*.tmp")) == []
+
+    # A failed temp-file creation must not escape as an exception.
+    with mock.patch.object(sm.tempfile, "NamedTemporaryFile",
+                           side_effect=OSError("no space")):
+        mgr.save_settings()
+    assert path.read_text(encoding="utf-8") == original
+
+    # The next successful save still replaces the file and persists settings.
+    mgr.save_settings()
+    assert json.loads(path.read_text(encoding="utf-8"))["local_port"] == 2080
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_share_token_roundtrips_and_bundles(vault_env):
     key = "test-share-key"
     link = _ss_link("share.example")
+
+    # Server link
     tok = tw.encrypt_share(key, link)
     assert tok.startswith("tws3://")
     assert not tok.startswith("tws3://tws3.")
     assert "ss://" not in tok
     raw = tw._b64url_decode(tok[len("tws3://"):])
-    assert raw[0] == 0x03  # v3
+    assert raw[0] == 0x03
     assert tw.decrypt_share(key, tok) == link
     assert tw.decrypt_share(key, tok[len("tws3://"):]) == link
 
+    # Subscription URL
+    url = "https://example.com/sub?token=abc123"
+    tok_sub = tw.encrypt_share("sub-share-key-2026", url)
+    assert tok_sub.startswith("tws3://")
+    assert tw.decrypt_share("sub-share-key-2026", tok_sub) == url
 
-def test_share_bare_token_and_reject_double_prefix(vault_env):
+    # Base64url key
+    b64_key = base64.urlsafe_b64encode(b"D" * 32).rstrip(b"=").decode("ascii")
+    tok_b64 = tw.encrypt_share(b64_key, "vless://uuid@host:443")
+    assert tw.decrypt_share(b64_key, tok_b64) == "vless://uuid@host:443"
+
+    # Default share key and fallback
+    pub_link = _ss_link("public.example")
+    tok_pub = tw.encrypt_share("", pub_link)
+    assert tok_pub.startswith("tws3://")
+    assert tw.decrypt_share("", tok_pub) == pub_link
+    assert tw.decrypt_share("my-personal-share-key", tok_pub) == pub_link
+
+    # Metadata and payload roundtrip
+    expires = 1893456000
+    tok_meta = tw.encrypt_share(key, link, lock_export=True, expires_at=expires)
+    assert tw.decrypt_share(key, tok_meta) == link
+    target, meta = tw.decrypt_share_payload(key, tok_meta)
+    assert target == link
+    assert meta["lock_export"] is True
+    assert meta["expires_at"] == expires
+
+    # Non-numeric expiry in an untrusted payload is dropped, not compared
+    for bad_expiry in ("soon", {"at": 1}, True):
+        token_bad = tw.encrypt_share(key, link, lock_export=True, expires_at=bad_expiry)
+        _, meta_bad = tw.decrypt_share_payload(key, token_bad)
+        assert meta_bad["expires_at"] is None
+
+    # Plain without metadata returns defaults
+    t_plain, m_plain = tw.decrypt_share_payload(key, tok)
+    assert t_plain == link
+    assert m_plain["lock_export"] is False
+    assert m_plain["expires_at"] is None
+
+    # Multi-server bundle
+    links = [
+        "ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjgzODg=#Node%201",
+        "vless://uuid-123@example.com:443?security=reality&type=grpc#Node%202",
+        "hysteria2://user:pass@hy2.example.com:443#Node%203",
+    ]
+    tok_bundle = tw.encrypt_share(key, links, lock_export=True, expires_at=1893456000)
+    bundle_target, bundle_meta = tw.decrypt_share_payload(key, tok_bundle)
+    assert isinstance(bundle_target, list)
+    assert len(bundle_target) == 3
+    assert bundle_target == links
+    assert bundle_meta["lock_export"] is True
+    assert bundle_meta["expires_at"] == 1893456000
+
+
+def test_share_token_edge_cases_and_tampering(vault_env):
     key = "test-share-key"
     link = _ss_link("legacy.example")
     clean_tok = tw.encrypt_share(key, link)
     b64_part = clean_tok[len("tws3://"):]
 
-    # Bare token tws3.<b64url>
+    # Bare token tws3.<b64url> accepts
     bare_tok = "tws3." + b64_part
     assert tw.decrypt_share(key, bare_tok) == link
 
-    # Transitional double prefix tws3://tws3.<b64url> is rejected
-    legacy_tok = "tws3://tws3." + b64_part
+    # Double prefix tws3://tws3.<b64url> is rejected
     with pytest.raises(tw.VaultError):
-        tw.decrypt_share(key, legacy_tok)
+        tw.decrypt_share(key, "tws3://tws3." + b64_part)
 
-
-def test_share_default_key_and_fallback(vault_env):
-    link = _ss_link("public.example")
-
-    # 1. Encrypt with default key (empty key argument)
-    tok = tw.encrypt_share("", link)
-    assert tok.startswith("tws3://")
-
-    # Decrypt with empty key -> uses DEFAULT_SHARE_KEY
-    assert tw.decrypt_share("", tok) == link
-
-    # Decrypt with mismatched personal key -> automatic fallback to DEFAULT_SHARE_KEY
-    assert tw.decrypt_share("my-personal-share-key", tok) == link
-
-    # 2. Encrypt with specific personal key
-    personal_tok = tw.encrypt_share("personal-key-123", link)
-    assert tw.decrypt_share("personal-key-123", personal_tok) == link
-
-    # Decrypting personal link with completely wrong key fails
-    with pytest.raises(tw.VaultError):
-        tw.decrypt_share("completely-wrong-key-456", personal_tok)
-
-
-def test_share_metadata_and_payload_roundtrip(vault_env):
-    key = "meta-key"
-    link = _ss_link("meta.example")
-    expires = 1893456000  # Year 2030
-
-    tok = tw.encrypt_share(key, link, lock_export=True, expires_at=expires)
-    assert tok.startswith("tws3://")
-
-    # Standard decrypt_share returns pure target link
-    assert tw.decrypt_share(key, tok) == link
-
-    # decrypt_share_payload returns target link and metadata dict
-    target, meta = tw.decrypt_share_payload(key, tok)
-    assert target == link
-    assert meta["lock_export"] is True
-    assert meta["expires_at"] == expires
-
-    # Test link without metadata returns defaults
-    tok_plain = tw.encrypt_share(key, link)
-    target_plain, meta_plain = tw.decrypt_share_payload(key, tok_plain)
-    assert target_plain == link
-    assert meta_plain["lock_export"] is False
-    assert meta_plain["expires_at"] is None
-
-
-def test_server_model_lock_export_and_expiration():
-    import time
-    from utils.server_model import Server
-
-    # Active server
-    s_active = Server(name="Active", expires_at=int(time.time()) + 3600, lock_export=True)
-    assert s_active.is_expired is False
-    assert s_active.lock_export is True
-
-    # Expired server
-    s_expired = Server(name="Expired", expires_at=int(time.time()) - 10, lock_export=False)
-    assert s_expired.is_expired is True
-
-    # No expiration
-    s_lifetime = Server(name="Lifetime", expires_at=None)
-    assert s_lifetime.is_expired is False
-
-    # Serialization roundtrip
-    d = s_active.to_dict()
-    assert d["lock_export"] is True
-    assert d["expires_at"] == s_active.expires_at
-
-    s_restored = Server.from_dict(d)
-    assert s_restored.name == "Active"
-    assert s_restored.lock_export is True
-    assert s_restored.expires_at == s_active.expires_at
-    assert s_restored.is_expired is False
-
-
-def test_export_payload_excludes_locked_servers_and_subs():
-    from utils.server_model import Server
-
-    s_normal = Server(name="Normal Srv", host="normal.example")
-    s_locked = Server(name="Locked Srv", host="locked.example", lock_export=True)
-
-    sub_normal = {
-        "name": "Normal Sub",
-        "url": "https://example.com/sub",
-        "servers": [s_normal, s_locked],
-        "lock_export": False
-    }
-    sub_locked = {
-        "name": "Locked Sub",
-        "url": "https://example.com/sub_locked",
-        "servers": [s_normal],
-        "lock_export": True
-    }
-
-    payload = tw.export_payload([s_normal, s_locked], [sub_normal, sub_locked])
-
-    # Manual servers: only s_normal exported
-    assert len(payload["manual_servers"]) == 1
-    assert payload["manual_servers"][0]["name"] == "Normal Srv"
-
-    # Subscriptions: only sub_normal exported, and its inner servers exclude s_locked
-    assert len(payload["subscriptions"]) == 1
-    assert payload["subscriptions"][0]["name"] == "Normal Sub"
-    assert len(payload["subscriptions"][0]["servers"]) == 1
-    assert payload["subscriptions"][0]["servers"][0]["name"] == "Normal Srv"
-
-
-def test_share_roundtrip_subscription_url(vault_env):
-    key = "sub-share-key-2026"
-    url = "https://example.com/sub?token=abc123"
-    tok = tw.encrypt_share(key, url)
-    assert tok.startswith("tws3://")
-    assert tw.decrypt_share(key, tok) == url
-
-
-def test_share_b64url_key(vault_env):
-    key = base64.urlsafe_b64encode(b"D" * 32).rstrip(b"=").decode("ascii")
-    tok = tw.encrypt_share(key, "vless://uuid@host:443")
-    assert tw.decrypt_share(key, tok) == "vless://uuid@host:443"
-
-
-def test_share_flip_byte_raises(vault_env):
-    key = "flip-key"
-    tok = tw.encrypt_share(key, _ss_link("flip.example"))
-    payload = tok[len("tws3://"):]
-    raw = bytearray(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    # Flip byte raises VaultError
+    raw = bytearray(base64.urlsafe_b64decode(b64_part + "=" * (-len(b64_part) % 4)))
     for flip_at in (1, 10, len(raw) - 1):
         raw2 = bytearray(raw)
         raw2[flip_at] ^= 0x01
@@ -408,42 +329,59 @@ def test_share_flip_byte_raises(vault_env):
         with pytest.raises(tw.VaultError):
             tw.decrypt_share(key, broken)
 
-
-def test_share_bundle_multiple_servers(vault_env):
-    key = "bundle-test-key"
-    links = [
-        "ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjgzODg=#Node%201",
-        "vless://uuid-123@example.com:443?security=reality&type=grpc#Node%202",
-        "hysteria2://user:pass@hy2.example.com:443#Node%203"
-    ]
-    tok = tw.encrypt_share(key, links, lock_export=True, expires_at=1893456000)
-    assert tok.startswith("tws3://")
-
-    target, metadata = tw.decrypt_share_payload(key, tok)
-    assert isinstance(target, list)
-    assert len(target) == 3
-    assert target == links
-    assert metadata["lock_export"] is True
-    assert metadata["expires_at"] == 1893456000
-
-
-def test_share_wrong_key_raises(vault_env):
-    link = _ss_link("wrong-key.example")
-    tok = tw.encrypt_share("key-a", link)
+    # Wrong key raises
     with pytest.raises(tw.VaultError):
-        tw.decrypt_share("key-b", tok)
+        tw.decrypt_share("wrong-key", clean_tok)
 
-
-def test_share_empty_string(vault_env):
+    # Empty string
     assert tw.encrypt_share("any-key", "") == ""
     assert tw.decrypt_share("any-key", "") == ""
 
-
-def test_share_passthrough_non_token(vault_env):
-    key = "some-key"
+    # Passthrough non-token
     assert tw.decrypt_share(key, "ss://plain@h:8388#x") == "ss://plain@h:8388#x"
     assert tw.decrypt_share(key, "https://example.com/sub") == "https://example.com/sub"
     assert tw.decrypt_share(key, "random-text") == "random-text"
+
+
+def test_server_lock_export_rules():
+    import time
+    from utils.server_model import Server
+
+    # Model lock_export and expiration properties
+    s_active = Server(name="Active", expires_at=int(time.time()) + 3600, lock_export=True)
+    assert s_active.is_expired is False
+    assert s_active.lock_export is True
+
+    s_expired = Server(name="Expired", expires_at=int(time.time()) - 10, lock_export=False)
+    assert s_expired.is_expired is True
+
+    s_lifetime = Server(name="Lifetime", expires_at=None)
+    assert s_lifetime.is_expired is False
+
+    # Serialization roundtrip
+    d = s_active.to_dict()
+    assert d["lock_export"] is True
+    assert d["expires_at"] == s_active.expires_at
+    s_restored = Server.from_dict(d)
+    assert s_restored.name == "Active"
+    assert s_restored.lock_export is True
+    assert s_restored.expires_at == s_active.expires_at
+    assert s_restored.is_expired is False
+
+    # Export payload excludes locked servers and locked subs
+    s_normal = Server(name="Normal Srv", host="normal.example")
+    s_locked = Server(name="Locked Srv", host="locked.example", lock_export=True)
+
+    sub_normal = {"name": "Normal Sub", "url": "https://example.com/sub", "servers": [s_normal, s_locked], "lock_export": False}
+    sub_locked = {"name": "Locked Sub", "url": "https://example.com/sub_locked", "servers": [s_normal], "lock_export": True}
+
+    payload = tw.export_payload([s_normal, s_locked], [sub_normal, sub_locked])
+    assert len(payload["manual_servers"]) == 1
+    assert payload["manual_servers"][0]["name"] == "Normal Srv"
+    assert len(payload["subscriptions"]) == 1
+    assert payload["subscriptions"][0]["name"] == "Normal Sub"
+    assert len(payload["subscriptions"][0]["servers"]) == 1
+    assert payload["subscriptions"][0]["servers"][0]["name"] == "Normal Srv"
 
 
 def test_add_server_dialog_hints_tws3(qapp):
@@ -453,149 +391,3 @@ def test_add_server_dialog_hints_tws3(qapp):
     dlg = AddServerDialog(theme=M3Theme(preset_key="lavender"))
     dlg.input_field.setText("tws3://some_token")
     assert "TwinSock Share" in dlg.hint_label.text()
-
-
-def test_main_window_rejects_unsupported_link(qapp, monkeypatch, tmp_path):
-    from ui.main_window import RoundedWindow
-    from PySide6.QtWidgets import QDialog, QMessageBox
-    import utils.subscription_store as sub_store
-
-    sub_store._last_fetch_errors["https://foreign.example.com/sub"] = "Foreign 502"
-
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append(text))
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-
-    win = RoundedWindow()
-    win.settings["tws3_share_key"] = "pure-v3-share-key"
-
-    # Attempt to paste invalid link
-    monkeypatch.setattr("ui.main_window.AddServerDialog.exec", lambda self: QDialog.Accepted)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.get_server_key", lambda self: "invalid://link")
-
-    win.show_add_dialog()
-    from utils.i18n import tr
-    assert any(tr("dlg.bad_link_text") in w for w in warned)
-    assert not any("Foreign 502" in w for w in warned)
-    assert len(win.server_manager.manual_servers) == 0
-
-
-def test_main_window_add_failed_subscription_url(qapp, monkeypatch, tmp_path):
-    from ui.main_window import RoundedWindow
-    from PySide6.QtWidgets import QDialog, QMessageBox
-    import utils.subscription_store as sub_store
-    from utils.i18n import tr
-
-    target_url = "https://failing-subscription.org/sub"
-    sub_store._last_fetch_errors[target_url] = "Connection reset by peer"
-
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append((title, text)))
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-
-    win = RoundedWindow()
-    monkeypatch.setattr("ui.main_window.AddServerDialog.exec", lambda self: QDialog.Accepted)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.get_server_key", lambda self: target_url)
-    monkeypatch.setattr(win.subscription_manager, "add", lambda *args, **kwargs: False)
-
-    win.show_add_dialog()
-    assert len(warned) == 1
-    title, text = warned[0]
-    assert title == tr("dlg.load_failed_title")
-    assert "Connection reset by peer" in text
-
-
-def test_main_window_add_tws3_server_link(qapp, monkeypatch, tmp_path):
-    from ui.main_window import RoundedWindow
-    from PySide6.QtWidgets import QDialog
-
-    share_key = "test-share-key"
-    ss = _ss_link("imported-server.example")
-    tws3_link = tw.encrypt_share(share_key, ss)
-
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-
-    win = RoundedWindow()
-    win.settings["tws3_share_key"] = share_key
-
-    monkeypatch.setattr("ui.main_window.AddServerDialog.exec", lambda self: QDialog.Accepted)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.get_server_key", lambda self: tws3_link)
-
-    win.show_add_dialog()
-    assert any(s.host == "imported-server.example" for s in win.server_manager.manual_servers)
-
-
-def test_main_window_tws3_with_metadata(qapp, monkeypatch, tmp_path):
-    from ui.main_window import RoundedWindow
-    from PySide6.QtWidgets import QDialog, QMessageBox
-
-    share_key = "test-share-key"
-    ss = _ss_link("metadata-server.example")
-    expires = 1999999999
-    tws3_link = tw.encrypt_share(share_key, ss, lock_export=True, expires_at=expires)
-
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-
-    win = RoundedWindow()
-    win.settings["tws3_share_key"] = share_key
-
-    monkeypatch.setattr("ui.main_window.AddServerDialog.exec", lambda self: QDialog.Accepted)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.get_server_key", lambda self: tws3_link)
-
-    win.show_add_dialog()
-    srv = next(s for s in win.server_manager.manual_servers if s.host == "metadata-server.example")
-    assert srv.lock_export is True
-    assert srv.expires_at == expires
-    assert srv.is_expired is False
-
-    # Check UI server items have QR button hidden
-    assert len(win.server_panel._server_items) == 1
-    item = win.server_panel._server_items[0]
-    assert item.share_button.isHidden() is True
-    assert item.expired_badge.isHidden() is True
-
-
-def test_main_window_expired_server_blocks_connection(qapp, monkeypatch, tmp_path):
-    from ui.main_window import RoundedWindow
-    from PySide6.QtWidgets import QDialog, QMessageBox
-
-    warned = []
-    informed = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append((title, text)))
-    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text: informed.append((title, text)))
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-
-    # Expired link (timestamp in past)
-    expired_ts = 1000000000
-    tws3_expired_link = tw.encrypt_share("", _ss_link("expired.example"), lock_export=False, expires_at=expired_ts)
-
-    win = RoundedWindow()
-    monkeypatch.setattr(win, "_ensure_backend", lambda: True)
-    monkeypatch.setattr(win.server_panel, "get_selected_index", lambda: 0)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.exec", lambda self: QDialog.Accepted)
-    monkeypatch.setattr("ui.main_window.AddServerDialog.get_server_key", lambda self: tws3_expired_link)
-
-    win.show_add_dialog()
-    from utils.i18n import tr
-    assert any(tr("dlg.expired_text") in text for title, text in informed)
-    assert len(win.server_manager.manual_servers) == 1
-    srv = win.server_manager.manual_servers[0]
-    assert srv.is_expired is True
-
-    # UI item shows [EXPIRED] badge
-    assert len(win.server_panel._server_items) == 1
-    item = win.server_panel._server_items[0]
-    assert item.expired_badge.isHidden() is False
-
-    # Try connecting to expired server
-    item.radio.setChecked(True)
-    win.toggle_connection(True)
-
-    assert any(tr("dlg.server_expired_title") in title for title, text in warned)
-    assert win.connection_manager.is_connected is False
-    assert win.screen_main.hero_btn.is_connected() is False

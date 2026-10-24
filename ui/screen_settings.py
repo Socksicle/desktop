@@ -1,3 +1,5 @@
+import logging
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QComboBox, QSpinBox, QPushButton, QLineEdit, QSizePolicy,
@@ -10,6 +12,7 @@ from .toggle_switch import AnimatedToggleSwitch
 from .m3_scroll_area import M3ScrollArea
 from .chevron_view import ChevronView
 from .settings_options import (
+    AUTO_UPDATE_INTERVAL_OPTIONS,
     DNS_OPTIONS,
     DNS_PRESET_URLS,
     ENGINE_FALLBACK,
@@ -35,6 +38,8 @@ from utils.i18n import tr
 from utils.startup_utils import is_autostart_enabled, set_autostart
 from utils import icons
 from utils.window_utils import compositing_available
+
+log = logging.getLogger(__name__)
 
 
 # Persistent cache of dynamic theme quadrant colors across screen transitions
@@ -259,6 +264,9 @@ class HubRow(QFrame):
         elif self.role == "secondary":
             icon_bg = getattr(theme, "secondary_container", "#332D41")
             icon_fg = getattr(theme, "on_secondary_container", "#E8DEF8")
+        elif self.role == "warning":
+            icon_bg = getattr(theme, "warning_container", "#5F4100")
+            icon_fg = getattr(theme, "on_warning_container", getattr(theme, "warning", "#F1C047"))
         else:  # "primary"
             icon_bg = getattr(theme, "primary_container", "#381E72")
             icon_fg = getattr(theme, "on_primary_container", "#EADDFF")
@@ -495,6 +503,7 @@ class SettingsScreen(QWidget):
         self.sw_killswitch = None
         self.sw_hy2_insecure = None
         self.sw_block_udp = None
+        self.sw_bypass_lan = None
         self.sw_tls_fragment = None
         self.sw_mux = None
         self.mux_settings = None
@@ -510,7 +519,21 @@ class SettingsScreen(QWidget):
         self.edit_ping_url = None
         self.sw_autostart = None
         self.sw_tray = None
+        self._syncing_notif_switches = False
+        self.sw_notif_master = None
+        self.sw_notif_connecting = None
+        self.sw_notif_connected = None
+        self.sw_notif_disconnected = None
+        self.sw_notif_connection_error = None
+        self.sw_notif_sub_updated = None
+        self.sw_notif_sub_error = None
+        self.sw_notif_killswitch = None
+        self.sw_notif_tray_minimized = None
+        self.notif_types_box = None
         self.sw_auto_update_subs = None
+        self.container_update_interval = None
+        self.auto_update_interval_combo = None
+        self.sw_fake_hwid = None
         self.lang_combo = None
         self.lbl_lang_hint = None
         self.port_spin = None
@@ -625,6 +648,15 @@ class SettingsScreen(QWidget):
         self.hub_row_appearance.clicked.connect(lambda: self.open_section("appearance", tr("set.hub_appearance")))
         app_layout.addWidget(self.hub_row_appearance)
 
+        self.hub_row_notifications = HubRow(
+            "hub_notifications", tr("set.hub_notifications"),
+            tr("set.hub_notifications_sub"),
+            self.theme, self.group_app,
+            position="middle", role="warning"
+        )
+        self.hub_row_notifications.clicked.connect(lambda: self.open_section("notifications", tr("set.hub_notifications")))
+        app_layout.addWidget(self.hub_row_notifications)
+
         self.hub_row_system = HubRow(
             "tab_settings", tr("set.hub_system"),
             tr("set.hub_system_sub"),
@@ -642,6 +674,9 @@ class SettingsScreen(QWidget):
 
         self.card_appearance = self._create_card(tr("set.hub_appearance"))
         self.content_layout.addWidget(self.card_appearance)
+
+        self.card_notifications = self._create_card(tr("set.hub_notifications"))
+        self.content_layout.addWidget(self.card_notifications)
 
         self.card_connection = self._create_card(tr("set.hub_connection"))
         self.content_layout.addWidget(self.card_connection)
@@ -693,8 +728,8 @@ class SettingsScreen(QWidget):
             if cols and len(cols) >= 4:
                 _CACHED_DYNAMIC_SWATCH_COLORS = list(cols)
                 return cols
-        except Exception:
-            pass
+        except (ImportError, AttributeError, ValueError, RuntimeError, OSError) as e:
+            log.warning("Failed to obtain dynamic swatch colors, falling back to default palette: %s", e)
         return ["#CCC2DC", "#D0BCFF", "#EFB8C8", "#4A4458"]
 
     def _build_appearance(self):
@@ -810,14 +845,6 @@ class SettingsScreen(QWidget):
         )
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
 
-        self.sw_tun = self._add_toggle_row(
-            conn_layout,
-            tr("set.tun"),
-            tr("set.tun_sub"),
-            self.settings.get("tun_mode", False)
-        )
-        self.sw_tun.toggled.connect(lambda s: self._emit_setting("tun_mode", s))
-
         self.sw_killswitch = self._add_toggle_row(
             conn_layout,
             tr("set.kill"),
@@ -847,14 +874,6 @@ class SettingsScreen(QWidget):
         self.port_spin.valueChanged.connect(lambda v: self._emit_setting("local_port", v))
         port_row.addWidget(self.port_spin)
         conn_layout.addLayout(port_row)
-
-        self.sw_hy2_insecure = self._add_toggle_row(
-            conn_layout,
-            tr("set.hy2insecure"),
-            tr("set.hy2insecure_sub"),
-            bool(self.settings.get("hy2_insecure", False))
-        )
-        self.sw_hy2_insecure.toggled.connect(lambda s: self._emit_setting("hy2_insecure", bool(s)))
 
         current_provider = self.settings.get("dns_provider", "system")
 
@@ -887,6 +906,15 @@ class SettingsScreen(QWidget):
             bool(self.settings.get("block_udp", False))
         )
         self.sw_block_udp.toggled.connect(lambda s: self._emit_setting("block_udp", bool(s)))
+
+        self.sw_bypass_lan = self._add_toggle_row(
+            tunnel_layout,
+            tr("set.bypass_lan"),
+            tr("set.bypass_lan_sub"),
+            bool(self.settings.get("bypass_lan", True))
+        )
+        self.sw_bypass_lan.toggled.connect(
+            lambda s: self._emit_setting("bypass_lan", bool(s)))
 
         self.sw_tls_fragment = self._add_toggle_row(
             tunnel_layout,
@@ -977,7 +1005,37 @@ class SettingsScreen(QWidget):
             tr("set.autoupdate_sub"),
             self.settings.get("auto_update_subs", True)
         )
-        self.sw_auto_update_subs.toggled.connect(lambda s: self._emit_setting("auto_update_subs", s))
+        self.sw_auto_update_subs.toggled.connect(self._on_auto_update_subs_toggled)
+
+        self.container_update_interval = QWidget()
+        self.container_update_interval.setStyleSheet("background: transparent; border: none;")
+        interval_layout = QVBoxLayout(self.container_update_interval)
+        interval_layout.setContentsMargins(0, 0, 0, 0)
+        interval_layout.setSpacing(6)
+
+        cur_interval = self.settings.get("auto_update_interval", 2.0)
+        try:
+            cur_interval = float(cur_interval)
+        except (ValueError, TypeError):
+            cur_interval = 2.0
+
+        self.auto_update_interval_combo = self._add_combo_row(
+            interval_layout,
+            tr("set.autoupdate_interval"),
+            [(val, tr(label_key)) for val, label_key in AUTO_UPDATE_INTERVAL_OPTIONS],
+            cur_interval
+        )
+        self.auto_update_interval_combo.currentIndexChanged.connect(self._on_auto_update_interval_changed)
+        subs_layout.addWidget(self.container_update_interval)
+        self.container_update_interval.setVisible(bool(self.settings.get("auto_update_subs", True)))
+
+        self.sw_fake_hwid = self._add_toggle_row(
+            subs_layout,
+            tr("set.send_hwid"),
+            tr("set.send_hwid_sub"),
+            bool(self.settings.get("fake_hwid", False))
+        )
+        self.sw_fake_hwid.toggled.connect(lambda s: self._emit_setting("fake_hwid", s))
 
         self.ua_combo = self._add_combo_row(
             subs_layout,
@@ -986,6 +1044,16 @@ class SettingsScreen(QWidget):
             self.settings.get("user_agent_key", "socksicle")
         )
         self.ua_combo.currentIndexChanged.connect(self._on_ua_changed)
+
+    def _on_auto_update_subs_toggled(self, enabled: bool):
+        if self.container_update_interval is not None:
+            self.container_update_interval.setVisible(bool(enabled))
+        self._emit_setting("auto_update_subs", bool(enabled))
+
+    def _on_auto_update_interval_changed(self, idx: int):
+        val = self.auto_update_interval_combo.itemData(idx)
+        if val is not None:
+            self._emit_setting("auto_update_interval", float(val))
 
     def _build_ping(self):
         ping_layout = QVBoxLayout(self.card_ping)
@@ -1083,6 +1151,175 @@ class SettingsScreen(QWidget):
         self.edit_ping_url.textChanged.connect(lambda u: self._emit_setting("ping_url", u.strip()))
         ping_layout.addWidget(self.edit_ping_url)
 
+    def _build_notifications(self):
+        notif_layout = QVBoxLayout(self.card_notifications)
+        notif_layout.setContentsMargins(16, 16, 16, 16)
+        notif_layout.setSpacing(14)
+
+        self.sw_notif_master = self._add_toggle_row(
+            notif_layout,
+            tr("set.notify_master"),
+            tr("set.notify_master_sub"),
+            self.settings.get("notifications_enabled", True)
+        )
+        self.sw_notif_master.toggled.connect(self._on_notif_master_toggled)
+
+        self.notif_types_box = QWidget()
+        self.notif_types_box.setStyleSheet("background: transparent; border: none;")
+        types_layout = QVBoxLayout(self.notif_types_box)
+        types_layout.setContentsMargins(0, 0, 0, 0)
+        types_layout.setSpacing(14)
+
+        self.sw_notif_connecting = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_connecting"),
+            tr("set.notify_connecting_sub"),
+            self.settings.get("notify_connecting", True)
+        )
+        self.sw_notif_connecting.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_connecting", s)
+        )
+
+        self.sw_notif_connected = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_connected"),
+            tr("set.notify_connected_sub"),
+            self.settings.get("notify_connected", True)
+        )
+        self.sw_notif_connected.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_connected", s)
+        )
+
+        self.sw_notif_disconnected = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_disconnected"),
+            tr("set.notify_disconnected_sub"),
+            self.settings.get("notify_disconnected", True)
+        )
+        self.sw_notif_disconnected.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_disconnected", s)
+        )
+
+        self.sw_notif_connection_error = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_connection_error"),
+            tr("set.notify_connection_error_sub"),
+            self.settings.get("notify_connection_error", True)
+        )
+        self.sw_notif_connection_error.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_connection_error", s)
+        )
+
+        self.sw_notif_sub_updated = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_sub_updated"),
+            tr("set.notify_sub_updated_sub"),
+            self.settings.get("notify_sub_updated", True)
+        )
+        self.sw_notif_sub_updated.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_sub_updated", s)
+        )
+
+        self.sw_notif_sub_error = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_sub_error"),
+            tr("set.notify_sub_error_sub"),
+            self.settings.get("notify_sub_error", True)
+        )
+        self.sw_notif_sub_error.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_sub_error", s)
+        )
+
+        self.sw_notif_killswitch = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_killswitch"),
+            tr("set.notify_killswitch_sub"),
+            self.settings.get("notify_killswitch", True)
+        )
+        self.sw_notif_killswitch.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_killswitch", s)
+        )
+
+        self.sw_notif_tray_minimized = self._add_toggle_row(
+            types_layout,
+            tr("set.notify_tray_minimized"),
+            tr("set.notify_tray_minimized_sub"),
+            self.settings.get("notify_tray_minimized", True)
+        )
+        self.sw_notif_tray_minimized.toggled.connect(
+            lambda s: self._on_notif_child_toggled("notify_tray_minimized", s)
+        )
+
+        notif_layout.addWidget(self.notif_types_box)
+
+    def _on_notif_child_toggled(self, key: str, checked: bool):
+        if self._syncing_notif_switches:
+            return
+        child_switches = {
+            "notify_connecting": self.sw_notif_connecting,
+            "notify_connected": self.sw_notif_connected,
+            "notify_disconnected": self.sw_notif_disconnected,
+            "notify_connection_error": self.sw_notif_connection_error,
+            "notify_sub_updated": self.sw_notif_sub_updated,
+            "notify_sub_error": self.sw_notif_sub_error,
+            "notify_killswitch": self.sw_notif_killswitch,
+            "notify_tray_minimized": self.sw_notif_tray_minimized,
+        }
+        sw = child_switches.get(key)
+        if sw is not None and sw.isChecked() != checked:
+            sw.setChecked(checked)
+        self._emit_setting(key, checked)
+
+        if checked:
+            if self.sw_notif_master is not None and not self.sw_notif_master.isChecked():
+                self._syncing_notif_switches = True
+                try:
+                    self.sw_notif_master.setChecked(True)
+                    self._emit_setting("notifications_enabled", True)
+                finally:
+                    self._syncing_notif_switches = False
+        else:
+            if not any(s.isChecked() for s in child_switches.values() if s is not None):
+                if self.sw_notif_master is not None and self.sw_notif_master.isChecked():
+                    self._syncing_notif_switches = True
+                    try:
+                        self.sw_notif_master.setChecked(False)
+                        self._emit_setting("notifications_enabled", False)
+                    finally:
+                        self._syncing_notif_switches = False
+
+    def _on_notif_master_toggled(self, checked: bool):
+        if self._syncing_notif_switches:
+            return
+        if self.sw_notif_master is not None and self.sw_notif_master.isChecked() != checked:
+            self.sw_notif_master.setChecked(checked)
+        self._emit_setting("notifications_enabled", checked)
+        child_pairs = [
+            ("notify_connecting", self.sw_notif_connecting),
+            ("notify_connected", self.sw_notif_connected),
+            ("notify_disconnected", self.sw_notif_disconnected),
+            ("notify_connection_error", self.sw_notif_connection_error),
+            ("notify_sub_updated", self.sw_notif_sub_updated),
+            ("notify_sub_error", self.sw_notif_sub_error),
+            ("notify_killswitch", self.sw_notif_killswitch),
+            ("notify_tray_minimized", self.sw_notif_tray_minimized),
+        ]
+        self._syncing_notif_switches = True
+        try:
+            if not checked:
+                for key, sw in child_pairs:
+                    if sw is not None and sw.isChecked():
+                        sw.setChecked(False)
+                        self._emit_setting(key, False)
+            else:
+                if not any(sw.isChecked() for _, sw in child_pairs if sw is not None):
+                    for key, sw in child_pairs:
+                        if sw is not None and not sw.isChecked():
+                            sw.setChecked(True)
+                            self._emit_setting(key, True)
+        finally:
+            self._syncing_notif_switches = False
+
     def _build_system(self):
         sys_layout = QVBoxLayout(self.card_system)
         sys_layout.setContentsMargins(16, 16, 16, 16)
@@ -1124,6 +1361,7 @@ class SettingsScreen(QWidget):
         self.card_tunnel.hide()
         self.card_ping.hide()
         self.card_subs.hide()
+        self.card_notifications.hide()
         self.card_system.hide()
         self.scroll_area.verticalScrollBar().setValue(0)
 
@@ -1140,6 +1378,7 @@ class SettingsScreen(QWidget):
         self.card_tunnel.setVisible(section_name == "tunnel")
         self.card_ping.setVisible(section_name == "ping")
         self.card_subs.setVisible(section_name == "subs")
+        self.card_notifications.setVisible(section_name == "notifications")
         self.card_system.setVisible(section_name == "system")
         self.scroll_area.verticalScrollBar().setValue(0)
 
@@ -1465,13 +1704,7 @@ class SettingsScreen(QWidget):
         self._emit_setting("auto_start", checked)
 
     def set_tun_mode(self, on: bool):
-        """Sync the switch when TUN is toggled on the main screen.
-
-        The Connection section (and sw_tun) may not be built yet; when it is
-        built later it reads the (already updated) tun_mode from settings.
-        """
-        if self.sw_tun is not None:
-            self.sw_tun.setChecked(bool(on))
+        pass
 
     def _update_hub_live_values(self):
         pm = self.settings.get("ping_method", "thp")
@@ -1494,13 +1727,33 @@ class SettingsScreen(QWidget):
             parts.append(tr("set.kill"))
         parts.append(engine_str)
         self.hub_row_connection.set_subtitle(", ".join(parts))
+        self.hub_row_connection.hide_badge()
 
-        tun_on = bool(self.settings.get("tun_mode", False))
-        if tun_on:
-            accent = getattr(self.theme, "primary", "#D0BCFF")
-            self.hub_row_connection.set_badge("TUN", bg_color="rgba(255, 255, 255, 0.08)", text_color=accent)
-        else:
-            self.hub_row_connection.hide_badge()
+        if hasattr(self, "hub_row_notifications"):
+            if not self.settings.get("notifications_enabled", True):
+                self.hub_row_notifications.set_subtitle(tr("set.notify_status_off"))
+            else:
+                types = [
+                    "notify_connecting",
+                    "notify_connected",
+                    "notify_disconnected",
+                    "notify_connection_error",
+                    "notify_sub_updated",
+                    "notify_sub_error",
+                    "notify_killswitch",
+                    "notify_tray_minimized",
+                ]
+                enabled_count = sum(1 for t in types if self.settings.get(t, True))
+                if enabled_count == len(types):
+                    self.hub_row_notifications.set_subtitle(tr("set.notify_status_on"))
+                elif enabled_count == 0:
+                    self.hub_row_notifications.set_subtitle(tr("set.notify_status_off"))
+                else:
+                    self.hub_row_notifications.set_subtitle(
+                        tr("set.notify_status_count").format(
+                            enabled=enabled_count, total=len(types)
+                        )
+                    )
 
     def _emit_setting(self, key: str, val):
         self.settings[key] = val
@@ -1748,14 +2001,14 @@ class SettingsScreen(QWidget):
 
         self._update_hub_live_values()
 
-        for row in [self.hub_row_appearance, self.hub_row_connection, self.hub_row_tunnel, self.hub_row_ping, self.hub_row_subs, self.hub_row_system]:
+        for row in [self.hub_row_appearance, self.hub_row_notifications, self.hub_row_connection, self.hub_row_tunnel, self.hub_row_ping, self.hub_row_subs, self.hub_row_system]:
             row.apply_theme(theme)
 
         for group in [self.group_ping_methods, self.group_ping_display]:
             if group is not None:
                 group.apply_theme(theme)
 
-        for sw in [self.sw_amoled, self.sw_invert_scroll, self.sw_show_server_card, self.sw_show_ip_card, self.sw_show_flags, self.sw_tun, self.sw_killswitch, self.sw_hy2_insecure, self.sw_block_udp, self.sw_tls_fragment, self.sw_mux, self.sw_autostart, self.sw_tray, self.sw_auto_update_subs]:
+        for sw in [self.sw_amoled, self.sw_invert_scroll, self.sw_show_server_card, self.sw_show_ip_card, self.sw_show_flags, self.sw_killswitch, self.sw_hy2_insecure, self.sw_block_udp, self.sw_bypass_lan, self.sw_tls_fragment, self.sw_mux, self.sw_autostart, self.sw_tray, self.sw_auto_update_subs, self.sw_fake_hwid, self.sw_notif_master, self.sw_notif_connecting, self.sw_notif_connected, self.sw_notif_disconnected, self.sw_notif_connection_error, self.sw_notif_sub_updated, self.sw_notif_sub_error, self.sw_notif_killswitch, self.sw_notif_tray_minimized]:
             if sw is not None:
                 sw.apply_theme(theme)
 

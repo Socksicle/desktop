@@ -29,39 +29,57 @@ def _response(body=BODY, status="200 OK", extra_headers=""):
     ).encode() + body
 
 
-def test_parser_reads_full_response_in_one_chunk():
+def test_parser_reads_valid_responses():
+    # 1. Full response in one chunk
     sock = FakeSocket([_response()])
     assert _read_http_response(sock, timeout=1) == BODY
 
-
-def test_parser_reads_split_headers_and_body():
+    # 2. Split across chunks byte-by-byte
     raw = _response()
-    middle = raw.find(b"\r\n\r\n") + 4
-    sock = FakeSocket([raw[:middle], raw[middle:]])
+    sock = FakeSocket([raw[i:i + 4] for i in range(0, len(raw), 4)])
     assert _read_http_response(sock, timeout=1) == BODY
 
+    # 3. Close-delimited body
+    raw_close = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + BODY
+    sock_close = FakeSocket([raw_close[i:i + 7] for i in range(0, len(raw_close), 7)])
+    assert _read_http_response(sock_close, timeout=1) == BODY
 
-def test_parser_reads_body_byte_by_byte():
-    raw = _response()
-    sock = FakeSocket([raw[i:i + 1] for i in range(len(raw))])
-    assert _read_http_response(sock, timeout=1) == BODY
-
-
-def test_parser_rejects_non_200_status():
-    raw = _response(status="500 Internal Server Error", body=b"nope")
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
-
-
-def test_parser_rejects_empty_body():
-    raw = _response(body=b"")
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
+    # 4. Chunked body
+    raw_chunked = (
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        + b"%x\r\n" % 10 + BODY[:10] + b"\r\n"
+        + b"%x\r\n" % (len(BODY) - 10) + BODY[10:] + b"\r\n"
+        + b"0\r\n\r\n"
+    )
+    sock_chunked = FakeSocket([raw_chunked])
+    assert _read_http_response(sock_chunked, timeout=1) == BODY
 
 
-def test_parser_rejects_missing_header_terminator():
-    sock = FakeSocket([b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n"])
-    assert _read_http_response(sock, timeout=1) is None
+def test_parser_rejects_errors_and_malformed_input():
+    cases = [
+        # Non-200 status
+        _response(status="500 Internal Server Error", body=b"err"),
+        _response(status="403 Forbidden", body=b"err"),
+        # Empty body
+        _response(body=b""),
+        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
+        # Missing header terminator
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n",
+        # Oversized
+        _response(body=b"x" * (MAX_RESPONSE_BYTES + 1)),
+        # Truncated chunked
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + b"%x\r\n" % len(BODY) + BODY,
+        # Malformed chunk size
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzzz\r\n" + BODY + b"\r\n0\r\n\r\n",
+    ]
+    for raw in cases:
+        sock = FakeSocket([raw])
+        assert _read_http_response(sock, timeout=1) is None
+
+    # Closed connection before full body
+    raw_partial = _response()
+    sock_partial = FakeSocket([raw_partial[:raw_partial.find(BODY) + 2]])
+    assert _read_http_response(sock_partial, timeout=1) is None
 
 
 def test_parser_trims_body_to_content_length():
@@ -74,83 +92,7 @@ def test_parser_trims_body_to_content_length():
     assert _read_http_response(sock, timeout=1) == BODY
 
 
-def test_parser_rejects_oversized_content_length():
-    raw = _response(body=b"x" * (MAX_RESPONSE_BYTES + 1))
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
-
-
-def test_parser_rejects_closed_connection_before_full_body():
-    raw = _response()
-    middle = raw.find(BODY) + 2
-    sock = FakeSocket([raw[:middle]])
-    assert _read_http_response(sock, timeout=1) is None
-
-
 def test_parser_sets_socket_timeout():
     sock = FakeSocket([_response()])
     _read_http_response(sock, timeout=7)
     assert sock.timeout == 7
-
-
-def test_parser_reads_close_delimited_body():
-    raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + BODY
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) == BODY
-
-
-def test_parser_reads_close_delimited_body_across_chunks():
-    raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + BODY
-    sock = FakeSocket([raw[i:i + 7] for i in range(0, len(raw), 7)])
-    assert _read_http_response(sock, timeout=1) == BODY
-
-
-def test_parser_reads_chunked_body():
-    raw = (
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        + b"%x\r\n" % 10 + BODY[:10] + b"\r\n"
-        + b"%x\r\n" % (len(BODY) - 10) + BODY[10:] + b"\r\n"
-        + b"0\r\n\r\n"
-    )
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) == BODY
-
-
-def test_parser_reads_chunked_body_with_split_size_line():
-    raw = (
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        + b"%x\r\n" % len(BODY) + BODY + b"\r\n0\r\n\r\n"
-    )
-    marker = raw.find(b"\r\n\r\n") + 4 + 3
-    sock = FakeSocket([raw[:marker], raw[marker:]])
-    assert _read_http_response(sock, timeout=1) == BODY
-
-
-def test_parser_rejects_truncated_chunked_body():
-    raw = (
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        + b"%x\r\n" % len(BODY) + BODY
-    )
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
-
-
-def test_parser_rejects_malformed_chunk_size():
-    raw = (
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        b"zzz\r\n" + BODY + b"\r\n0\r\n\r\n"
-    )
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
-
-
-def test_parser_rejects_status_403():
-    raw = _response(status="403 Forbidden", body=b'{"status":"fail"}')
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None
-
-
-def test_parser_rejects_empty_close_delimited_body():
-    raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-    sock = FakeSocket([raw])
-    assert _read_http_response(sock, timeout=1) is None

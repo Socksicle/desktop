@@ -208,13 +208,12 @@ class _RawListener:
                 pass
 
 
-def test_ping_http_responses():
+def test_ping_http_responses_and_failures():
     # 1. Delayed headers
     srv = _Socks5TestServer(header_delay=0.1)
     try:
         ms = http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2)
-        assert ms is not None
-        assert ms >= 50
+        assert ms is not None and ms >= 50
     finally:
         srv.close()
 
@@ -222,8 +221,7 @@ def test_ping_http_responses():
     srv2 = _Socks5TestServer(header_delay=0.05, no_body=True)
     try:
         ms = http_ping_via_socks5_once("127.0.0.1", srv2.port, timeout=2)
-        assert ms is not None
-        assert ms >= 20
+        assert ms is not None and ms >= 20
     finally:
         srv2.close()
 
@@ -234,37 +232,31 @@ def test_ping_http_responses():
     finally:
         srv3.close()
 
-
-def test_ping_http_failures():
-    # Reject connect
-    srv = _Socks5TestServer(reject_connect=True)
+    # 4. Failures: reject connect, drop after connect, timeout, truncated headers, unreachable
+    srv_rej = _Socks5TestServer(reject_connect=True)
     try:
-        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv_rej.port, timeout=1) is None
     finally:
-        srv.close()
+        srv_rej.close()
 
-    # Drop after connect
-    srv = _Socks5TestServer(drop_after_connect=True)
+    srv_drop = _Socks5TestServer(drop_after_connect=True)
     try:
-        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv_drop.port, timeout=1) is None
     finally:
-        srv.close()
+        srv_drop.close()
 
-    # Timeout
-    srv = _Socks5TestServer(silent=True)
+    srv_silent = _Socks5TestServer(silent=True)
     try:
-        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=0.1) is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv_silent.port, timeout=0.1) is None
     finally:
-        srv.close()
+        srv_silent.close()
 
-    # Truncated headers
-    srv = _Socks5TestServer(truncate_headers=True)
+    srv_trunc = _Socks5TestServer(truncate_headers=True)
     try:
-        assert http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=1) is None
+        assert http_ping_via_socks5_once("127.0.0.1", srv_trunc.port, timeout=1) is None
     finally:
-        srv.close()
+        srv_trunc.close()
 
-    # Unreachable
     assert http_ping_via_socks5_once("127.0.0.1", 1, timeout=0.2) is None
 
 
@@ -282,6 +274,10 @@ def test_ping_methods_and_dispatch():
         # Unknown fallback is GET
         ms = ping_via_socks5("127.0.0.1", srv.port, method="bogus")
         assert ms is not None and srv.method == b"GET"
+
+        # Direct tcp connect ping success
+        ms_tcp = tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2)
+        assert ms_tcp is not None and ms_tcp >= 0
     finally:
         srv.close()
 
@@ -294,7 +290,7 @@ def test_ping_methods_and_dispatch():
     finally:
         srv2.close()
 
-    # TCP Connect
+    # TCP Connect dispatch and failure cases
     srv3 = _Socks5TestServer()
     try:
         ms = ping_via_socks5("127.0.0.1", srv3.port, method="tcp_connect")
@@ -302,29 +298,16 @@ def test_ping_methods_and_dispatch():
     finally:
         srv3.close()
 
-
-def test_tcp_connect_ping():
-    # Success
-    srv = _Socks5TestServer()
-    try:
-        ms = tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2)
-        assert ms is not None and ms >= 0
-    finally:
-        srv.close()
-
-    # Unreachable
     assert tcp_connect_ping_via_socks5("127.0.0.1", 1, timeout=0.2) is None
-
-    # Rejected connect
-    srv2 = _Socks5TestServer(reject_connect=True)
+    srv_rej = _Socks5TestServer(reject_connect=True)
     try:
-        assert tcp_connect_ping_via_socks5("127.0.0.1", srv2.port, timeout=1) is None
+        assert tcp_connect_ping_via_socks5("127.0.0.1", srv_rej.port, timeout=1) is None
     finally:
-        srv2.close()
+        srv_rej.close()
 
 
-def test_proxy_ping_job(qapp):
-    # Success
+def test_proxy_ping_job(qapp, monkeypatch):
+    # Success via QThreadPool
     srv = _Socks5TestServer(header_delay=0.05)
     results = []
     pool = QThreadPool()
@@ -335,7 +318,7 @@ def test_proxy_ping_job(qapp):
     finally:
         srv.close()
 
-    # Failure
+    # Failure via QThreadPool
     srv2 = _Socks5TestServer(reject_connect=True)
     results_fail = []
     try:
@@ -344,6 +327,25 @@ def test_proxy_ping_job(qapp):
         assert results_fail == [None]
     finally:
         srv2.close()
+
+    # Options: timeout and url pass-through
+    calls = []
+    def fake_ping_via_socks5(host, port, method="http_get", timeout=None, url=None):
+        calls.append({"host": host, "port": port, "method": method, "timeout": timeout, "url": url})
+        return 42.0
+
+    monkeypatch.setattr("utils.ping.ping_via_socks5", fake_ping_via_socks5)
+    job_results = []
+    job = ProxyPingJob("custom.host", 1080, job_results.append, method="http_head", timeout=5.0, url="http://custom.host/check")
+    job.run()
+
+    assert job_results == [42.0]
+    assert len(calls) == 1
+    assert calls[0]["host"] == "custom.host"
+    assert calls[0]["port"] == 1080
+    assert calls[0]["method"] == "http_head"
+    assert calls[0]["timeout"] == 5.0
+    assert calls[0]["url"] == "http://custom.host/check"
 
 
 
@@ -386,27 +388,26 @@ def test_socket_options_applied():
         udp_sock.close()
 
 
-def test_async_direct_tcp_ping():
-    srv = _Socks5TestServer()
+def test_async_direct_pings():
+    # TCP
+    srv_tcp = _Socks5TestServer()
     try:
-        ms = asyncio.run(async_direct_tcp_ping("127.0.0.1", srv.port, timeout=2.0))
+        ms = asyncio.run(async_direct_tcp_ping("127.0.0.1", srv_tcp.port, timeout=2.0))
         assert ms is not None and ms >= 0
     finally:
-        srv.close()
+        srv_tcp.close()
     assert asyncio.run(async_direct_tcp_ping("127.0.0.1", 1, timeout=0.2)) is None
 
-
-def test_async_direct_http_ping():
-    srv = _RawListener(respond=HEADERS)
+    # HTTP
+    srv_http = _RawListener(respond=HEADERS)
     try:
-        ms = asyncio.run(async_direct_http_ping("127.0.0.1", srv.port, timeout=2.0))
+        ms = asyncio.run(async_direct_http_ping("127.0.0.1", srv_http.port, timeout=2.0))
         assert ms is not None and ms >= 0
     finally:
-        srv.close()
+        srv_http.close()
     assert asyncio.run(async_direct_http_ping("127.0.0.1", 1, timeout=0.2)) is None
 
-
-def test_async_direct_quic_ping():
+    # QUIC
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.bind(("127.0.0.1", 0))
     port = udp_sock.getsockname()[1]
@@ -429,7 +430,8 @@ def test_async_direct_quic_ping():
     assert asyncio.run(async_direct_quic_ping("127.0.0.1", 1, timeout=0.2)) is None
 
 
-def test_async_socks5_proxy_ready():
+def test_async_socks5_probes():
+    # Ready
     srv = _Socks5TestServer()
     try:
         assert asyncio.run(async_socks5_proxy_ready(srv.port, timeout=1.0)) is True
@@ -437,14 +439,13 @@ def test_async_socks5_proxy_ready():
         srv.close()
     assert asyncio.run(async_socks5_proxy_ready(1, timeout=0.2)) is False
 
-
-def test_async_http_ping_via_socks5():
-    srv = _Socks5TestServer(header_delay=0.03)
+    # HTTP via socks5
+    srv_http = _Socks5TestServer(header_delay=0.03)
     try:
-        ms = asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv.port, timeout=2.0))
+        ms = asyncio.run(async_http_ping_via_socks5_once("127.0.0.1", srv_http.port, timeout=2.0))
         assert ms is not None and ms >= 15
     finally:
-        srv.close()
+        srv_http.close()
 
     srv_fail = _Socks5TestServer(reject_connect=True)
     try:
@@ -452,26 +453,22 @@ def test_async_http_ping_via_socks5():
     finally:
         srv_fail.close()
 
-
-def test_async_tcp_connect_ping_via_socks5():
-    srv = _Socks5TestServer()
+    # TCP connect via socks5
+    srv_tcp = _Socks5TestServer()
     try:
-        ms = asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv.port, timeout=2.0))
+        ms = asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv_tcp.port, timeout=2.0))
         assert ms is not None and ms >= 0
     finally:
-        srv.close()
+        srv_tcp.close()
 
-    srv_fail = _Socks5TestServer(reject_connect=True)
+    srv_tcp_fail = _Socks5TestServer(reject_connect=True)
     try:
-        assert asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv_fail.port, timeout=1.0)) is None
+        assert asyncio.run(async_tcp_connect_ping_via_socks5("127.0.0.1", srv_tcp_fail.port, timeout=1.0)) is None
     finally:
-        srv_fail.close()
+        srv_tcp_fail.close()
 
 
-
-
-
-def test_async_ping_server_job():
+def test_async_ping_jobs_and_batch():
     srv = _Socks5TestServer()
     try:
         idx, ms = asyncio.run(async_ping_server_job(3, "127.0.0.1", srv.port, method="tcp_connect"))
@@ -484,8 +481,6 @@ def test_async_ping_server_job():
     finally:
         srv.close()
 
-
-def test_async_ping_all_batch():
     srv1 = _Socks5TestServer()
     srv2 = _Socks5TestServer()
     try:
@@ -511,7 +506,118 @@ def test_async_ping_all_batch():
         srv2.close()
 
 
-def test_async_batch_ping_job_in_qthreadpool(qapp):
+def test_async_ping_all_checks_proxy_ready_once_per_batch(monkeypatch):
+    check_count = 0
+
+    async def fake_proxy_ready(port, timeout=0.5):
+        nonlocal check_count
+        check_count += 1
+        return True
+
+    async def fake_http_ping(*args, **kwargs):
+        return 25.0
+
+    monkeypatch.setattr("utils.ping.async_socks5_proxy_ready", fake_proxy_ready)
+    monkeypatch.setattr("utils.ping.async_http_ping_via_socks5_once", fake_http_ping)
+
+    servers = [
+        {"host": "1.1.1.1", "port": 443},
+        {"host": "2.2.2.2", "port": 443},
+        {"host": "3.3.3.3", "port": 443},
+    ]
+    res = asyncio.run(async_ping_all(
+        servers,
+        method="http_head",
+        socks5_port=10808,
+        timeout=1.0,
+        direct=False,
+    ))
+    assert len(res) == 3
+    assert all(ms == 25.0 for ms in res.values())
+    assert check_count == 1
+
+    # Backward compatibility: async_ping_server_job with proxy_ready=None still checks
+    check_count = 0
+    idx, ms = asyncio.run(async_ping_server_job(
+        0, "1.1.1.1", 443, method="http_head", socks5_port=10808, timeout=1.0, direct=False,
+    ))
+    assert idx == 0
+    assert ms == 25.0
+    assert check_count == 1
+
+
+def test_async_ping_all_direct_by_default_ignores_socks5(monkeypatch):
+    """By default, batch pinging of servers must probe each server directly, not through SOCKS5."""
+    probed_hosts = []
+
+    async def fake_direct_http_ping(host, port, timeout=None, method="HEAD", path=None):
+        probed_hosts.append(host)
+        return 12.0
+
+    monkeypatch.setattr("utils.ping.async_direct_http_ping", fake_direct_http_ping)
+    monkeypatch.setattr("utils.ping.async_socks5_proxy_ready", lambda *a, **kw: False)
+
+    servers = [
+        {"host": "1.1.1.1", "port": 443},
+        {"host": "2.2.2.2", "port": 443},
+    ]
+    res = asyncio.run(async_ping_all(
+        servers,
+        method="http_head",
+        socks5_port=10808,
+        timeout=1.0,
+    ))
+    assert probed_hosts == ["1.1.1.1", "2.2.2.2"]
+    assert res == {0: 12.0, 1: 12.0}
+
+
+def test_async_ping_server_job_bounded_by_eff_timeout(monkeypatch):
+    import time
+
+    async def slow_probe(*args, **kwargs):
+        await asyncio.sleep(2.0)
+        return 10.0
+
+    monkeypatch.setattr("utils.ping.async_http_ping_via_socks5_once", slow_probe)
+
+    t0 = time.perf_counter()
+    idx, ms = asyncio.run(async_ping_server_job(
+        1, "example.com", 443, method="http_head", socks5_port=10808, timeout=0.2, proxy_ready=True, direct=False
+    ))
+    elapsed = time.perf_counter() - t0
+
+    assert idx == 1
+    assert ms == PING_ERROR_SENTINEL
+    assert elapsed < 0.6
+
+
+def test_async_ping_server_job_silent_socks_bounded_by_single_timeout():
+    silent_srv = _Socks5TestServer(silent=True)
+    working_srv = _Socks5TestServer()
+    try:
+        t0 = time.perf_counter()
+        idx, ms = asyncio.run(async_ping_server_job(
+            1, "example.com", 443, method="http_head", socks5_port=silent_srv.port, timeout=0.25, proxy_ready=True, direct=False
+        ))
+        elapsed = time.perf_counter() - t0
+        assert idx == 1
+        assert ms == PING_ERROR_SENTINEL
+        # With 4 probe targets, without overall deadline it would take 4x0.25 = 1.0s.
+        # With single overall deadline, it finishes in ~1x timeout (< 0.55s).
+        assert elapsed < 0.55
+
+        # Second working target succeeds
+        idx2, ms2 = asyncio.run(async_ping_server_job(
+            2, "127.0.0.1", 80, method="http_head", socks5_port=working_srv.port, timeout=1.0, proxy_ready=True, direct=False
+        ))
+        assert idx2 == 2
+        assert ms2 >= 0
+    finally:
+        silent_srv.close()
+        working_srv.close()
+
+
+def test_async_batch_ping_job_execution_and_options(qapp, monkeypatch):
     srv1 = _Socks5TestServer()
     srv2 = _Socks5TestServer()
     try:
@@ -538,8 +644,26 @@ def test_async_batch_ping_job_in_qthreadpool(qapp):
         srv1.close()
         srv2.close()
 
+    # Options: timeout and url pass-through
+    calls = []
+    async def fake_async_ping_all(servers, callback=None, method=None, socks5_port=None, concurrency=20, timeout=None, url=None):
+        calls.append({"servers": servers, "method": method, "timeout": timeout, "url": url})
+        if callback:
+            callback(0, 30.0)
+        return {0: 30.0}
 
-def test_http_ping_sends_user_agent_header():
+    monkeypatch.setattr("utils.ping.async_ping_all", fake_async_ping_all)
+    job_results = []
+    job2 = AsyncBatchPingJob(["127.0.0.1"], job_results.append, method="http_head", timeout=7.0, url="http://check.me/204")
+    job2.run()
+
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 7.0
+    assert calls[0]["url"] == "http://check.me/204"
+
+
+def test_async_direct_http_ping_headers_and_failure():
+    # User-Agent and Accept headers
     srv = _RawListener()
     try:
         asyncio.run(async_direct_http_ping("127.0.0.1", srv.port, timeout=1.0))
@@ -551,6 +675,27 @@ def test_http_ping_sends_user_agent_header():
         assert b"Accept: */*" in srv.data
     finally:
         srv.close()
+
+    # Mid-request failure returns None
+    import utils.ping as ping_mod
+    from unittest import mock
+
+    async def _run():
+        reader = mock.AsyncMock()
+        reader.read.side_effect = OSError("recv broken")
+        writer = mock.MagicMock()
+        writer.get_extra_info.return_value = None
+        writer.write.return_value = None
+        writer.drain = mock.AsyncMock()
+        writer.wait_closed = mock.AsyncMock()
+
+        async def _fake_open(*args, **kwargs):
+            return reader, writer
+
+        with mock.patch.object(ping_mod.asyncio, "open_connection", side_effect=_fake_open):
+            return await async_direct_http_ping("127.0.0.1", 80, timeout=0.5)
+
+    assert asyncio.run(_run()) is None
 
 
 class _Socks5RateLimitedServer:
@@ -616,32 +761,6 @@ def test_http_ping_handles_429_rate_limit():
         srv.close()
 
 
-
-
-
-def test_async_direct_http_ping_mid_request_failure_returns_none():
-    """Same as above for the async variant: no fake latency on failure."""
-    import utils.ping as ping_mod
-    from unittest import mock
-
-    async def _run():
-        reader = mock.AsyncMock()
-        reader.read.side_effect = OSError("recv broken")
-        writer = mock.MagicMock()
-        writer.get_extra_info.return_value = None
-        writer.write.return_value = None
-        writer.drain = mock.AsyncMock()
-        writer.wait_closed = mock.AsyncMock()
-
-        async def _fake_open(*args, **kwargs):
-            return reader, writer
-
-        with mock.patch.object(ping_mod.asyncio, "open_connection", side_effect=_fake_open):
-            return await async_direct_http_ping("127.0.0.1", 80, timeout=0.5)
-
-    assert asyncio.run(_run()) is None
-
-
 def test_parse_ping_url_variants():
     # Defaults on empty / None / invalid
     assert parse_ping_url(None) == ("connectivitycheck.gstatic.com", "/generate_204", 80, False)
@@ -677,39 +796,17 @@ def test_parse_ping_url_variants():
     assert is_ssl is False
 
 
-def test_proxy_ping_job_honors_timeout_and_url(monkeypatch):
-    calls = []
-    def fake_ping_via_socks5(host, port, method="http_get", timeout=None, url=None):
-        calls.append({"host": host, "port": port, "method": method, "timeout": timeout, "url": url})
-        return 42.0
-
-    monkeypatch.setattr("utils.ping.ping_via_socks5", fake_ping_via_socks5)
-    results = []
-    job = ProxyPingJob("custom.host", 1080, results.append, method="http_head", timeout=5.0, url="http://custom.host/check")
-    job.run()
-
-    assert results == [42.0]
-    assert len(calls) == 1
-    assert calls[0]["host"] == "custom.host"
-    assert calls[0]["port"] == 1080
-    assert calls[0]["method"] == "http_head"
-    assert calls[0]["timeout"] == 5.0
-    assert calls[0]["url"] == "http://custom.host/check"
+def test_parse_ping_url_rejects_invalid_input():
+    for bad in ("ftp://example.com/check", "http://",
+                "http://example.com:99999/check", "http://[::1", 123):
+        with pytest.raises(ValueError):
+            parse_ping_url(bad)
 
 
-def test_async_batch_ping_job_honors_timeout_and_url(monkeypatch):
-    calls = []
-    async def fake_async_ping_all(servers, callback=None, method=None, socks5_port=None, concurrency=20, timeout=None, url=None):
-        calls.append({"servers": servers, "method": method, "timeout": timeout, "url": url})
-        if callback:
-            callback(0, 30.0)
-        return {0: 30.0}
-
-    monkeypatch.setattr("utils.ping.async_ping_all", fake_async_ping_all)
-    results = []
-    job = AsyncBatchPingJob(["127.0.0.1"], results.append, method="http_head", timeout=7.0, url="http://check.me/204")
-    job.run()
-
-    assert len(calls) == 1
-    assert calls[0]["timeout"] == 7.0
-    assert calls[0]["url"] == "http://check.me/204"
+def test_http_probe_status_line_validation():
+    from utils.ping import _http_probe_succeeded
+    assert _http_probe_succeeded(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n") is True
+    assert _http_probe_succeeded(b"HTTP/1.1 429 Too Many Requests\r\n\r\n") is False
+    assert _http_probe_succeeded(b"HTTP/1.1 abc OK\r\n\r\n") is False
+    assert _http_probe_succeeded(b"HTTP/1.1\r\n\r\n") is False
+    assert _http_probe_succeeded(b"HTTP/1.1 200 OK\r\n") is None

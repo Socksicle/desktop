@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from .header_bar import HeaderBar
 from .tray_manager import TrayManager
+from .notification import NotificationManager
 from .add_server_dialog import AddServerDialog
 from .connection_log_dialog import ConnectionLogDialog
 from .taskbar_view import TaskbarView
@@ -31,7 +32,7 @@ from utils.server_manager import ServerManager
 from utils.server_model import server_identity
 from utils.subscription_manager import SubscriptionManager
 from utils.subscription_store import get_last_fetch_error
-from utils.ping import DEFAULT_PING_METHOD, DEFAULT_PING_TIMEOUT
+from utils.ping import DEFAULT_PING_METHOD, DEFAULT_PING_TIMEOUT, DEFAULT_PING_CONCURRENCY
 from utils.theme import M3Theme
 from utils.platform_utils import get_app_dir
 from utils.window_utils import (
@@ -82,7 +83,7 @@ class RoundedWindow(QWidget):
             spec=self.settings.get("theme_spec", "2021"),
         )
         self._filter_mode = 0
-        self._selected_server_key = None
+        self._selected_server_key = self.settings.get("selected_server_key", None)
 
         self.setWindowTitle("Socksicle")
         configure_main_window(self, 440, 800)
@@ -91,10 +92,16 @@ class RoundedWindow(QWidget):
         self.icon_path = str(icon_file) if icon_file.exists() else "icon.svg"
 
         self.tray_manager = TrayManager(self.theme, self.icon_path)
+        self.notification_manager = NotificationManager(self.tray_manager, self.settings)
         self.tray_manager.showHideRequested.connect(self._toggle_visibility)
         self.tray_manager.quitRequested.connect(self.quit_app)
         self.tray_manager.connectRequested.connect(self._on_connect_from_tray)
         self.tray_manager.disconnectRequested.connect(self._on_disconnect_from_tray)
+        self.tray_manager.tunModeRequested.connect(self._on_tun_toggled)
+        self.tray_manager.set_tun_mode(self.settings.get("tun_mode", False))
+        if self._selected_server_key:
+            self.tray_manager.set_selected_server(self._selected_server_key)
+        self.tray_manager.update_status(is_connected=False)
 
         self.subscription_manager = SubscriptionManager(self.settings)
         self.connection_manager = ConnectionManager(self.settings)
@@ -167,6 +174,8 @@ class RoundedWindow(QWidget):
         self.server_panel.groupPingRequested.connect(self._on_ping_group)
         self.server_panel.groupRefreshRequested.connect(self._refresh_subscription)
         self.server_panel.groupEditRequested.connect(self._edit_subscription)
+        self.server_panel.groupPinToggled.connect(self._toggle_group_pin)
+        self.server_panel.groupDeleteRequested.connect(self._delete_subscription)
         self.server_panel.pingFinished.connect(self._on_group_ping_finished)
 
         self.screen_stack.addWidget(self.screen_main)
@@ -347,6 +356,8 @@ class RoundedWindow(QWidget):
         elif key == "tun_mode":
             self._apply_tun_mode(val)
             self.header_bar.set_tun_mode(val, animate=True)
+            if hasattr(self, "tray_manager") and self.tray_manager:
+                self.tray_manager.set_tun_mode(val)
 
         self.connection_manager.apply_settings(self.settings)
 
@@ -362,9 +373,12 @@ class RoundedWindow(QWidget):
     def _on_tun_toggled(self, on: bool):
         self.settings["tun_mode"] = bool(on)
         self.server_manager.save_settings()
+        self.header_bar.set_tun_mode(bool(on), animate=True)
         self.screen_settings.set_tun_mode(bool(on))
         self._apply_tun_mode(bool(on))
         self.connection_manager.apply_settings(self.settings)
+        if hasattr(self, "tray_manager") and self.tray_manager:
+            self.tray_manager.set_tun_mode(bool(on))
 
     def on_vpn_switch_clicked(self):
         self.toggle_connection()
@@ -399,13 +413,7 @@ class RoundedWindow(QWidget):
                 info.get("flag", "🌐")
             )
             flag = info.get("flag", "🌐") if self.settings.get("show_flags", False) else ""
-            if flag:
-                title = tr("tray.connected_flag").format(flag=flag, ip=info['ip'])
-            else:
-                title = tr("tray.connected_plain").format(ip=info['ip'])
-            self.tray_manager.notify(
-                title,
-                tr("tray.connected_msg").format(ip=info['ip']))
+            self.notification_manager.notify_connected(info.get("ip", ""), flag)
 
     @Slot(str)
     def on_geo_error(self, reason):
@@ -419,7 +427,7 @@ class RoundedWindow(QWidget):
         if self.connection_manager.is_connected:
             self.connection_manager.disconnect()
             self.screen_main.set_status(tr("status.error"), False, is_error=True)
-        self.tray_manager.notify(tr("killswitch.title"), message)
+        self.notification_manager.notify_killswitch_failed(reason)
         MessageBox.warning(self, tr("killswitch.title"), message)
 
     @Slot(object)
@@ -431,12 +439,22 @@ class RoundedWindow(QWidget):
     def on_status_changed(self, msg, err):
         if not self.connection_manager.is_connected and not self.connection_manager.is_connecting:
             self._ping_all_generation += 1
-        self.tray_manager.set_disconnect_enabled(
-            self.connection_manager.is_connected or self.connection_manager.is_connecting
-        )
+        is_conn = self.connection_manager.is_connected
+        is_connecting = self.connection_manager.is_connecting or self.connection_manager.is_reconnecting or "Reconnecting" in msg
+        curr_srv = self.connection_manager.current_server
+        srv_name = curr_srv.name if curr_srv else None
+        if hasattr(self, "tray_manager") and self.tray_manager:
+            self.tray_manager.set_disconnect_enabled(is_conn or is_connecting)
+            self.tray_manager.update_status(
+                is_connected=is_conn,
+                server_name=srv_name,
+                is_connecting=is_connecting and not is_conn
+            )
+            if curr_srv:
+                self.tray_manager.set_selected_server(curr_srv)
         if err:
             self.screen_main.set_status(tr("status.error"), False, is_error=True)
-            self.tray_manager.notify(tr("status.error"), msg)
+            self.notification_manager.notify_connection_error(msg)
         elif self.connection_manager.is_connected:
             self.screen_main.set_status(tr("status.connected"), True)
             self.screen_main.card_telemetry.start_session()
@@ -462,14 +480,61 @@ class RoundedWindow(QWidget):
             self.screen_main.set_status(tr("status.connected"), True)
         elif not self.connection_manager.is_connecting and not self.connection_manager.is_reconnecting:
             self.screen_main.set_status(tr("status.disconnected"), False)
+        if hasattr(self, "tray_manager") and self.tray_manager:
+            curr_srv = self.connection_manager.current_server
+            srv_name = curr_srv.name if curr_srv else None
+            is_connecting = self.connection_manager.is_connecting or self.connection_manager.is_reconnecting
+            self.tray_manager.update_status(
+                is_connected=bool(conn),
+                server_name=srv_name,
+                is_connecting=is_connecting and not bool(conn)
+            )
+            if curr_srv:
+                self.tray_manager.set_selected_server(curr_srv)
         for item in self.server_panel._server_items:
             item.radio.update()
+
+    def _save_selected_server_key(self, key: str | None):
+        self._selected_server_key = key
+        if self.settings.get("selected_server_key") != key:
+            self.settings["selected_server_key"] = key
+            self.server_manager.save_settings()
+        if hasattr(self, "tray_manager") and self.tray_manager:
+            self.tray_manager.set_selected_server(key)
 
     def _on_server_selected(self, idx):
         servers = self._current_servers()
         if 0 <= idx < len(servers):
             selected = servers[idx]
-            self._selected_server_key = server_identity(selected)
+            if self.connection_manager.is_connected or self.connection_manager.is_connecting:
+                curr = self.connection_manager.current_server
+                if curr and curr.key == selected.key:
+                    return
+                selected_is_xhttp = (getattr(selected, "transport", "") or "").lower() in ("xhttp", "splithttp")
+                curr_is_xhttp = (getattr(curr, "transport", "") or "").lower() in ("xhttp", "splithttp") if curr else False
+                if selected_is_xhttp or curr_is_xhttp:
+                    if curr:
+                        curr_target = server_identity(curr)
+                        curr_idx = next((i for i, s in enumerate(servers) if server_identity(s) == curr_target), -1)
+                        if curr_idx >= 0:
+                            self.server_panel.set_selected_index(curr_idx)
+                        self._save_selected_server_key(curr_target)
+                        self.screen_main.card_active.set_server({
+                            "name": curr.name,
+                            "server": curr.host,
+                            "server_port": curr.port,
+                            "flag": curr.flag_emoji,
+                            "proto": curr.protocol.value,
+                        })
+                    MessageBox.information(
+                        self,
+                        tr("dlg.hotswap_unsupported_title"),
+                        tr("dlg.hotswap_xhttp_text"),
+                        theme=self.theme,
+                    )
+                    return
+
+            self._save_selected_server_key(server_identity(selected))
             self.screen_main.card_active.set_server({
                 "name": selected.name,
                 "server": selected.host,
@@ -478,9 +543,6 @@ class RoundedWindow(QWidget):
                 "proto": selected.protocol.value,
             })
             if self.connection_manager.is_connected or self.connection_manager.is_connecting:
-                curr = self.connection_manager.current_server
-                if curr and curr.key == selected.key:
-                    return
                 self.toggle_connection(True)
 
     def toggle_connection(self, connect=None):
@@ -539,14 +601,36 @@ class RoundedWindow(QWidget):
                         tr("dlg.server_expired_text").format(name=server.name))
                     self.screen_main.set_status(tr("status.disconnected"), False)
                     return
+                if self.connection_manager.is_connected or self.connection_manager.is_connecting:
+                    curr = self.connection_manager.current_server
+                    if curr and curr.key != server.key:
+                        selected_is_xhttp = (getattr(server, "transport", "") or "").lower() in ("xhttp", "splithttp")
+                        curr_is_xhttp = (getattr(curr, "transport", "") or "").lower() in ("xhttp", "splithttp") if curr else False
+                        if selected_is_xhttp or curr_is_xhttp:
+                            curr_target = server_identity(curr)
+                            curr_idx = next((i for i, s in enumerate(servers) if server_identity(s) == curr_target), -1)
+                            if curr_idx >= 0:
+                                self.server_panel.set_selected_index(curr_idx)
+                            self._save_selected_server_key(curr_target)
+                            self.screen_main.card_active.set_server({
+                                "name": curr.name,
+                                "server": curr.host,
+                                "server_port": curr.port,
+                                "flag": curr.flag_emoji,
+                                "proto": curr.protocol.value,
+                            })
+                            MessageBox.information(
+                                self,
+                                tr("dlg.hotswap_unsupported_title"),
+                                tr("dlg.hotswap_xhttp_text"),
+                                theme=self.theme,
+                            )
+                            return
                 self.connection_manager.set_available_servers(servers)
                 log.info("Connecting to server index %d...", idx)
                 self.screen_main.set_status(tr("status.connecting"), False, is_connecting=True)
                 is_tun = self.settings.get("tun_mode", False)
-                if is_tun:
-                    self.tray_manager.notify(tr("tray.connecting"), tr("tray.tunnel_for").format(name=server.name))
-                else:
-                    self.tray_manager.notify(tr("tray.connecting"), tr("tray.connect_to").format(name=server.name))
+                self.notification_manager.notify_connecting(server.name, is_tun=is_tun)
 
                 QThreadPool.globalInstance().start(
                     _ToggleJob(self.connection_manager, server, True))
@@ -555,7 +639,7 @@ class RoundedWindow(QWidget):
         else:
             log.info("Disconnecting...")
             self.screen_main.set_status(tr("status.disconnected"), False)
-            self.tray_manager.notify(tr("status.disconnected"), tr("tray.conn_closed"))
+            self.notification_manager.notify_disconnected()
             QThreadPool.globalInstance().start(
                 _ToggleJob(self.connection_manager, None, False))
 
@@ -587,6 +671,7 @@ class RoundedWindow(QWidget):
                     "icon": sub.get("icon_emoji", "🌐"),
                     "subtitle": self._group_subtitle(sub),
                     "is_direct": False,
+                    "is_pinned": bool(sub.get("is_pinned", False)),
                     "collapsed": name in collapsed,
                     "servers": list(sub.get("servers", [])),
                 })
@@ -634,9 +719,9 @@ class RoundedWindow(QWidget):
                         target_idx = i
                         break
                 else:
-                    self._selected_server_key = server_identity(servers[0])
+                    self._save_selected_server_key(server_identity(servers[0]))
             else:
-                self._selected_server_key = server_identity(servers[0])
+                self._save_selected_server_key(server_identity(servers[0]))
             target_srv = servers[target_idx]
             self.server_panel.set_selected_index(target_idx)
             self.screen_main.card_active.set_server({
@@ -682,10 +767,15 @@ class RoundedWindow(QWidget):
         method = self.settings.get("ping_method", DEFAULT_PING_METHOD)
         timeout = float(self.settings.get("ping_timeout", DEFAULT_PING_TIMEOUT))
         url = self.settings.get("ping_url") or None
+        try:
+            concurrency = int(self.settings.get("ping_concurrency", DEFAULT_PING_CONCURRENCY))
+        except (ValueError, TypeError):
+            concurrency = DEFAULT_PING_CONCURRENCY
         self.server_panel.ping_all(
-            method, self.connection_manager.local_port,
+            method, None,
             servers=servers, group_key=key,
-            timeout=timeout, url=url)
+            timeout=timeout, url=url,
+            concurrency=concurrency)
 
     @Slot(str)
     def _on_group_ping_finished(self, key: str):
@@ -732,6 +822,30 @@ class RoundedWindow(QWidget):
         # reports back via updated/updateFailed, so the UI never blocks.
         self.subscription_manager.update(sub)
 
+    def _toggle_group_pin(self, key: str):
+        sub = self.subscription_manager.get(key)
+        if not sub:
+            return
+        new_pinned = not bool(sub.get("is_pinned", False))
+        self.subscription_manager.set_pinned(key, new_pinned)
+        self._refresh_server_list()
+
+    def _delete_subscription(self, key: str):
+        sub = self.subscription_manager.get(key)
+        if not sub:
+            return
+        reply = MessageBox.question(
+            self,
+            tr("sub.delete_title"),
+            tr("sub.delete_confirm").format(name=sub.get("name", key)),
+            MessageBox.Yes | MessageBox.No,
+            MessageBox.No,
+            theme=self.theme,
+        )
+        if reply == MessageBox.Yes:
+            self.subscription_manager.delete(sub.get("name", key))
+            self._refresh_server_list()
+
     def _edit_subscription(self, key: str):
         sub = self.subscription_manager.get(key)
         if not sub:
@@ -756,7 +870,7 @@ class RoundedWindow(QWidget):
         target = server_identity(server)
         for i, s in enumerate(self._current_servers()):
             if server_identity(s) == target:
-                self._selected_server_key = target
+                self._save_selected_server_key(target)
                 self.server_panel.set_selected_index(i)
                 QTimer.singleShot(100, lambda: self.toggle_connection(True))
                 return
@@ -779,10 +893,7 @@ class RoundedWindow(QWidget):
     @Slot(str, str, str)
     def _on_sub_update_failed(self, sub_name, url, err_msg):
         self._clear_refresh_state()
-        self.tray_manager.notify(
-            tr("tray.sub_error"),
-            tr("tray.sub_error_msg").format(sub=sub_name, err=err_msg)
-        )
+        self.notification_manager.notify_sub_error(sub_name, err_msg)
         MessageBox.warning(
             self,
             tr("dlg.sub_failed_title"),
@@ -791,16 +902,11 @@ class RoundedWindow(QWidget):
 
     @Slot(bool, int)
     def _on_sub_updated(self, success, new_count):
+        is_manual = self._refreshing_key is not None
         self._clear_refresh_state()
         if success:
             self._refresh_server_list()
-            if new_count > 0:
-                self.tray_manager.notify(
-                    tr("tray.sub_updated"),
-                    trn("tray.nodes_added", new_count).format(n=new_count))
-            else:
-                self.tray_manager.notify(
-                    tr("tray.sub_updated"), tr("tray.sub_uptodate"))
+            self.notification_manager.notify_sub_updated(new_count, is_manual=is_manual)
 
     def _on_server_deleted(self, server):
         target = server_identity(server)
@@ -929,9 +1035,35 @@ class RoundedWindow(QWidget):
         if self.settings.get("minimize_to_tray", True) and self.tray_manager.tray_available:
             event.ignore()
             self.hide()
-            self.tray_manager.notify("Socksicle", tr("tray.running"))
+            self.notification_manager.notify_tray_minimized()
         else:
             self.quit_app()
+
+    def show_and_activate(self):
+        """Restore from tray/taskbar and bring the window to the foreground."""
+        if self.isMinimized():
+            self.setWindowState(
+                self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive
+            )
+            self.showNormal()
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception as e:
+                log.debug("SetForegroundWindow failed: %s", e)
+        active_modal = QApplication.activeModalWidget()
+        if active_modal:
+            try:
+                active_modal.raise_()
+                active_modal.activateWindow()
+            except Exception as e:
+                log.debug("Failed to activate modal widget: %s", e)
 
     def _toggle_visibility(self):
         if self.isVisible():

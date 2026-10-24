@@ -6,14 +6,13 @@ takes effect after restart, like the render backend.
 """
 from . import i18n_en, i18n_he, i18n_ru, i18n_zh
 
-SUPPORTED_LANGUAGES = ("ru", "en", "zh", "he")
+SUPPORTED_LANGUAGES = ("ru", "en", "zh")
 DEFAULT_LANGUAGE = "ru"
 
 _catalogs = {
     "ru": i18n_ru.STRINGS,
     "en": i18n_en.STRINGS,
     "zh": i18n_zh.STRINGS,
-    "he": i18n_he.STRINGS,
 }
 _current = DEFAULT_LANGUAGE
 

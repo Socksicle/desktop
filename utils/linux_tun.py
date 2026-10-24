@@ -44,8 +44,9 @@ class LinuxTunError(RuntimeError):
 
 
 def _checked_port(port) -> int:
-    port = int(port)
-    if isinstance(port, bool) or not 1 <= port <= 65535:
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise LinuxTunError(f"invalid port: {port!r}")
+    if not 1 <= port <= 65535:
         raise LinuxTunError(f"invalid port: {port}")
     return port
 
@@ -171,7 +172,7 @@ def build_tun_inbound(
     return inbound
 
 
-def build_pre_match_rules(bypass_processes=(), dns_hijack_inbound=None) -> list[dict]:
+def build_pre_match_rules(bypass_processes=(), dns_hijack_inbound=None, bypass_lan: bool = True) -> list[dict]:
     """Route rules ordered so kernel bypass fires before sniffing.
 
     ``bypass`` is honoured only for auto_redirect connections in
@@ -179,7 +180,9 @@ def build_pre_match_rules(bypass_processes=(), dns_hijack_inbound=None) -> list[
     userspace sniffer path. When ``dns_hijack_inbound`` is set, the
     hijack-dns rule applies only to that inbound.
     """
-    rules: list[dict] = [{"ip_is_private": True, "action": "bypass"}]
+    rules: list[dict] = []
+    if bypass_lan:
+        rules.append({"ip_is_private": True, "action": "bypass"})
     processes = [p for p in bypass_processes if p]
     if processes:
         rules.append({"process_name": processes, "action": "bypass"})

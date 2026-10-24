@@ -15,168 +15,101 @@ import utils.twinsock as tw
 
 
 
-def test_tun_linux_grants_caps_without_gui_restart(main_win, monkeypatch):
-    """On Linux, missing privileges trigger grant_tun_capabilities without restarting GUI."""
+def test_tun_linux_grant_capabilities_success_and_failure(main_win, monkeypatch):
+    """On Linux, missing privileges trigger grant_tun_capabilities; abort on failure without GUI restart."""
     main_win.settings["tun_mode"] = True
     monkeypatch.setattr("utils.platform_utils.sys.platform", "linux")
     monkeypatch.setattr("sys.platform", "linux")
 
+    # 1. Success path
     elevate_called = []
     grant_called = []
-
-    # Patch via mock (not monkeypatch): monkeypatch's undo writes the old
-    # bound method into the singleton's instance dict, and the attribute
-    # then shadows a later class-level find_binary mock in other tests.
-    with mock.patch.object(main_win.connection_manager.engine, "find_binary",
-                           return_value=Path("/fake/sing-box")), \
-            mock.patch("ui.main_window.RoundedWindow._ensure_backend",
-                       lambda self: True), \
-            mock.patch("utils.platform_utils.elevate_restart",
-                       lambda: elevate_called.append(True)), \
-            mock.patch("utils.platform_utils.grant_tun_capabilities",
-                       lambda p, parent_window=None:
-                       grant_called.append(p) or True), \
-            mock.patch.object(main_win.connection_manager, "toggle",
-                              lambda srv, connect: True):
+    with mock.patch.object(main_win.connection_manager.engine, "find_binary", return_value=Path("/fake/sing-box")), \
+         mock.patch("ui.main_window.RoundedWindow._ensure_backend", lambda self: True), \
+         mock.patch("utils.platform_utils.elevate_restart", lambda: elevate_called.append(True)), \
+         mock.patch("utils.platform_utils.grant_tun_capabilities", lambda p, parent_window=None: grant_called.append(p) or True), \
+         mock.patch.object(main_win.connection_manager, "toggle", lambda srv, connect: True):
         main_win.toggle_connection(True)
 
     assert len(elevate_called) == 0
     assert len(grant_called) == 1
 
-
-def test_tun_linux_warns_and_aborts_when_grant_fails(main_win, monkeypatch):
-    """On Linux, declining polkit prompt shows warning and aborts without restarting GUI."""
-    main_win.settings["tun_mode"] = True
-    monkeypatch.setattr("utils.platform_utils.sys.platform", "linux")
-    monkeypatch.setattr("sys.platform", "linux")
-
-    elevate_called = []
-    grant_called = []
+    # 2. Failure path (declining polkit prompt shows warning and aborts)
+    elevate_called2 = []
+    grant_called2 = []
     warnings = []
-
-    with mock.patch.object(main_win.connection_manager.engine, "find_binary",
-                           return_value=Path("/fake/sing-box")), \
-            mock.patch("ui.main_window.RoundedWindow._ensure_backend",
-                       lambda self: True), \
-            mock.patch("utils.platform_utils.elevate_restart",
-                       lambda: elevate_called.append(True)), \
-            mock.patch("utils.platform_utils.grant_tun_capabilities",
-                       lambda p, parent_window=None:
-                       grant_called.append(p) or False), \
-            mock.patch.object(QMessageBox, "warning",
-                              lambda parent, title, text:
-                              warnings.append((title, text))):
+    with mock.patch.object(main_win.connection_manager.engine, "find_binary", return_value=Path("/fake/sing-box")), \
+         mock.patch("ui.main_window.RoundedWindow._ensure_backend", lambda self: True), \
+         mock.patch("utils.platform_utils.elevate_restart", lambda: elevate_called2.append(True)), \
+         mock.patch("utils.platform_utils.grant_tun_capabilities", lambda p, parent_window=None: grant_called2.append(p) or False), \
+         mock.patch.object(QMessageBox, "warning", lambda parent, title, text: warnings.append((title, text))):
         main_win.toggle_connection(True)
 
-    assert len(elevate_called) == 0
-    assert len(grant_called) == 1
+    assert len(elevate_called2) == 0
+    assert len(grant_called2) == 1
     assert len(warnings) == 1
     from utils.i18n import tr
     assert tr("dlg.tun_title") in warnings[0][0]
 
 
-def test_tun_windows_asks_for_uac_elevation_when_not_admin(main_win, monkeypatch):
-    """On Windows, TUN mode prompts for UAC restart if not admin."""
+def test_platform_elevation_and_killswitch_rules(main_win, monkeypatch):
+    from utils.i18n import tr
+    monkeypatch.setattr("ui.main_window.RoundedWindow._ensure_backend", lambda self: True)
+
+    # 1. Windows TUN asks for UAC elevation if not admin
     main_win.settings["tun_mode"] = True
+    main_win.settings["killswitch"] = False
     monkeypatch.setattr("utils.platform_utils.sys.platform", "win32")
     monkeypatch.setattr("sys.platform", "win32")
-
-    elevate_called = []
-    questions = []
-
-    monkeypatch.setattr("ui.main_window.RoundedWindow._ensure_backend", lambda self: True)
+    elevate_win = []
+    questions_win = []
     monkeypatch.setattr("utils.platform_utils.is_admin", lambda: False)
-    monkeypatch.setattr("utils.platform_utils.elevate_restart", lambda: elevate_called.append(True))
-    monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, buttons, default: questions.append((title, text)) or QMessageBox.Yes)
+    monkeypatch.setattr("utils.platform_utils.elevate_restart", lambda: elevate_win.append(True))
+    monkeypatch.setattr(QMessageBox, "question", lambda p, t, txt, b, d: questions_win.append((t, txt)) or QMessageBox.Yes)
 
     main_win.toggle_connection(True)
+    assert len(questions_win) == 1
+    assert tr("dlg.admin_title") in questions_win[0][0]
+    assert len(elevate_win) == 1
 
-    assert len(questions) == 1
-    from utils.i18n import tr
-    assert tr("dlg.admin_title") in questions[0][0]
-    assert len(elevate_called) == 1
-
-
-def test_killswitch_windows_asks_for_uac_elevation(main_win, monkeypatch):
-    """Kill Switch needs Administrator rights on Windows; ask to restart."""
+    # 2. Windows Kill Switch asks for UAC elevation
     main_win.settings["tun_mode"] = False
     main_win.settings["killswitch"] = True
-    monkeypatch.setattr("utils.platform_utils.sys.platform", "win32")
-    monkeypatch.setattr("sys.platform", "win32")
-
-    elevate_called = []
-    questions = []
+    questions_ks = []
+    elevate_ks = []
     toggled = []
-
-    monkeypatch.setattr("ui.main_window.RoundedWindow._ensure_backend", lambda self: True)
-    monkeypatch.setattr("utils.platform_utils.is_admin", lambda: False)
-    monkeypatch.setattr("utils.platform_utils.elevate_restart", lambda: elevate_called.append(True))
-    monkeypatch.setattr(
-        QMessageBox, "question",
-        lambda parent, title, text, buttons, default: questions.append((title, text)) or QMessageBox.Yes)
-    monkeypatch.setattr(
-        main_win.connection_manager, "toggle",
-        lambda srv, connect: toggled.append((srv, connect)))
+    monkeypatch.setattr(QMessageBox, "question", lambda p, t, txt, b, d: questions_ks.append((t, txt)) or QMessageBox.Yes)
+    monkeypatch.setattr("utils.platform_utils.elevate_restart", lambda: elevate_ks.append(True))
+    monkeypatch.setattr(main_win.connection_manager, "toggle", lambda srv, connect: toggled.append((srv, connect)))
 
     main_win.toggle_connection(True)
-
-    assert len(questions) == 1
-    from utils.i18n import tr
-    assert tr("dlg.admin_ks_text") in questions[0][1]
-    assert len(elevate_called) == 1
+    assert len(questions_ks) == 1
+    assert tr("dlg.admin_ks_text") in questions_ks[0][1]
+    assert len(elevate_ks) == 1
     assert toggled == []
 
-
-def test_killswitch_and_tun_are_refused_on_windows(main_win, monkeypatch):
-    """Firewall policy would block the traffic TUN routes; refuse the combo."""
+    # 3. Windows refuses Killswitch + TUN combo
     main_win.settings["tun_mode"] = True
     main_win.settings["killswitch"] = True
-    monkeypatch.setattr("utils.platform_utils.sys.platform", "win32")
-    monkeypatch.setattr("sys.platform", "win32")
-
-    warnings = []
-    toggled = []
-
-    monkeypatch.setattr("ui.main_window.RoundedWindow._ensure_backend", lambda self: True)
-    monkeypatch.setattr(
-        QMessageBox, "warning",
-        lambda parent, title, text: warnings.append((title, text)))
-    monkeypatch.setattr(
-        main_win.connection_manager, "toggle",
-        lambda srv, connect: toggled.append((srv, connect)))
+    warnings_combo = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda p, t, txt: warnings_combo.append((t, txt)))
 
     main_win.toggle_connection(True)
-
-    assert len(warnings) == 1
-    from utils.i18n import tr
-    assert tr("dlg.ks_tun_text") in warnings[0][1]
+    assert len(warnings_combo) == 1
+    assert tr("dlg.ks_tun_text") in warnings_combo[0][1]
     assert toggled == []
 
-
-def test_killswitch_linux_requires_root(main_win, monkeypatch):
-    """nftables needs root; do not connect while claiming protection is on."""
+    # 4. Linux Kill Switch requires root
     main_win.settings["tun_mode"] = False
     main_win.settings["killswitch"] = True
     monkeypatch.setattr("utils.platform_utils.sys.platform", "linux")
     monkeypatch.setattr("sys.platform", "linux")
-
-    warnings = []
-    toggled = []
-
-    monkeypatch.setattr("ui.main_window.RoundedWindow._ensure_backend", lambda self: True)
-    monkeypatch.setattr("utils.platform_utils.is_admin", lambda: False)
-    monkeypatch.setattr(
-        QMessageBox, "warning",
-        lambda parent, title, text: warnings.append((title, text)))
-    monkeypatch.setattr(
-        main_win.connection_manager, "toggle",
-        lambda srv, connect: toggled.append((srv, connect)))
+    warnings_linux = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda p, t, txt: warnings_linux.append((t, txt)))
 
     main_win.toggle_connection(True)
-
-    assert len(warnings) == 1
-    from utils.i18n import tr
-    assert tr("dlg.admin_ks_linux_text") in warnings[0][1]
+    assert len(warnings_linux) == 1
+    assert tr("dlg.admin_ks_linux_text") in warnings_linux[0][1]
     assert toggled == []
 
 
@@ -241,21 +174,21 @@ def test_show_add_dialog_adds_server(main_win, monkeypatch):
     assert any(s.name == "ImportedTest" for s in srvs)
 
 
-def test_toggle_job_runs_manager_toggle():
-    """_ToggleJob forwards (server, connect) to the manager, swallowing errors."""
+def test_connection_dispatch_and_threading_contract(main_win, monkeypatch):
+    import ui.main_window as mw
     from ui.main_window import _ToggleJob
+
+    # Module threading guard
+    assert not hasattr(mw, "threading")
+
+    # _ToggleJob runs manager toggle
     calls = []
     job = _ToggleJob(SimpleNamespace(toggle=lambda s, c: calls.append((s, c))), "srv", True)
     job.run()
     assert calls == [("srv", True)]
 
-
-def test_toggle_connection_dispatches_via_threadpool(main_win, monkeypatch):
-    """No naked threading.Thread from the button: dispatch goes to QThreadPool."""
-    import ui.main_window as mw
-    from ui.main_window import _ToggleJob
+    # Dispatches via QThreadPool
     started = []
-
     class FakePool:
         def start(self, job):
             started.append(job)
@@ -276,43 +209,25 @@ def test_toggle_connection_dispatches_via_threadpool(main_win, monkeypatch):
     assert toggled[1] == (None, False)
 
 
-def test_main_window_module_uses_no_threading():
-    """Regression guard: threading.Thread must not creep back into UI slots."""
-    import ui.main_window as mw
-    assert not hasattr(mw, "threading")
-
-
-def test_setting_engine_auto_switches_to_singbox(main_win, monkeypatch):
-    """'auto' is a valid engine choice; EngineType('auto') used to raise ValueError."""
+def test_engine_setting_selection_and_transitions(main_win, monkeypatch):
     switched = []
     monkeypatch.setattr(main_win.connection_manager, "switch_engine",
                         lambda engine: switched.append(engine))
+
+    # Setting engine 'auto' switches to sing-box
     main_win._on_setting_value_changed("engine", "auto")
     assert len(switched) == 1
     assert switched[0].engine_type == EngineType.SINGBOX
 
-
-def test_setting_engine_xray_switches_to_xray(main_win, monkeypatch):
-    """Explicit non-auto engine selection still reaches that engine.
-
-    switch_engine is stubbed, so apply_settings() at the end of
-    _on_setting_value_changed may issue a second (would be no-op) switch;
-    both resolved engines must be XRAY either way.
-    """
-    switched = []
-    monkeypatch.setattr(main_win.connection_manager, "switch_engine",
-                        lambda engine: switched.append(engine))
+    # Setting engine 'xray' switches to xray
+    switched.clear()
     main_win._on_setting_value_changed("engine", "xray")
     assert len(switched) >= 1
     assert all(e.engine_type == EngineType.XRAY for e in switched)
 
-
-def test_disabling_tun_with_auto_engine_does_not_crash(main_win, monkeypatch):
-    """TUN off with settings['engine'] == 'auto' must not call EngineType('auto')."""
+    # Disabling TUN with auto engine does not crash
     main_win.settings["engine"] = "auto"
-    switched = []
-    monkeypatch.setattr(main_win.connection_manager, "switch_engine",
-                        lambda engine: switched.append(engine))
+    switched.clear()
     main_win._on_setting_value_changed("tun_mode", False)
     assert len(switched) == 1
     assert switched[0].engine_type == EngineType.SINGBOX
@@ -325,28 +240,16 @@ def _click_event(widget):
                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
 
 
-def test_header_tun_badge_toggles_setting(main_win, monkeypatch):
-    """Clicking the header TUN badge persists tun_mode and switches the engine."""
+def test_header_tun_badge_lifecycle_and_sync(main_win, monkeypatch, tmp_path):
     switched = []
-    monkeypatch.setattr(main_win.connection_manager, "switch_engine",
-                        lambda engine: switched.append(engine))
+    real_switch = main_win.connection_manager.switch_engine
+    def spy_switch(engine):
+        switched.append(engine)
+        return real_switch(engine)
+    monkeypatch.setattr(main_win.connection_manager, "switch_engine", spy_switch)
     bar = main_win.header_bar.tun_bar
-    main_win.header_bar.set_tun_mode(False, animate=False)
 
-    bar.mousePressEvent(_click_event(bar))
-
-    assert main_win.settings["tun_mode"] is True
-    assert len(switched) == 1
-    assert bar.is_checked() is True
-    # Settings screen toggle follows the header badge once its section builds.
-    main_win.screen_settings._ensure_section("connection")
-    assert main_win.screen_settings.sw_tun.isChecked() is True
-    assert switched[0].engine_type == EngineType.SINGBOX
-
-
-def test_header_tun_badge_only_visible_on_main_tab(main_win):
-    """The Off/TUN pill next to the close button belongs to the main tab only."""
-    bar = main_win.header_bar.tun_bar
+    # 1. Tab visibility
     main_win._on_taskbar_tab_changed(0)
     assert not bar.isHidden()
     main_win._on_taskbar_tab_changed(1)
@@ -356,32 +259,24 @@ def test_header_tun_badge_only_visible_on_main_tab(main_win):
     main_win._on_taskbar_tab_changed(0)
     assert not bar.isHidden()
 
+    # 2. Click toggles setting and switches engine
+    main_win.header_bar.set_tun_mode(False, animate=False)
+    bar.mousePressEvent(_click_event(bar))
+    assert main_win.settings["tun_mode"] is True
+    assert len(switched) == 1
+    assert bar.is_checked() is True
+    main_win.screen_settings._ensure_section("connection")
+    assert getattr(main_win.screen_settings, "sw_tun", None) is None
+    assert switched[0].engine_type == EngineType.SINGBOX
 
-def test_setting_tun_updates_header_badge(main_win):
-    """tun_mode from the settings screen is mirrored onto the header badge."""
+    # 3. Setting change updates header badge
     main_win.settings["tun_mode"] = False
     main_win._on_setting_value_changed("tun_mode", True)
     assert main_win.header_bar.tun_bar.is_checked() is True
     main_win._on_setting_value_changed("tun_mode", False)
     assert main_win.header_bar.tun_bar.is_checked() is False
 
-
-def test_tun_badge_reflects_saved_state_on_start(qapp, monkeypatch, tmp_path):
-    """A persisted tun_mode=True shows the header badge in its checked state."""
-    import utils.twinsock as tw
-    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr("utils.platform_utils.get_config_dir", lambda: tmp_path)
-    tw._reset()
-    (tmp_path / "settings.json").write_text('{"tun_mode": true}', encoding="utf-8")
-
-    from ui.main_window import RoundedWindow
-    win = RoundedWindow()
-    assert win.header_bar.tun_bar.is_checked() is True
-
-
-def test_on_tun_toggled_switches_engine(main_win, monkeypatch):
-    """Badge on -> engine resolves to sing-box; off -> current engine."""
+    # 4. _on_tun_toggled switches engine
     main_win.settings["tun_mode"] = False
     main_win.settings["engine"] = "xray"
     main_win.header_bar.set_tun_mode(False, animate=False)
@@ -389,3 +284,13 @@ def test_on_tun_toggled_switches_engine(main_win, monkeypatch):
     assert main_win.connection_manager.engine.engine_type == EngineType.SINGBOX
     main_win._on_tun_toggled(False)
     assert main_win.connection_manager.engine.engine_type == EngineType.XRAY
+
+    # 5. Saved state on start
+    monkeypatch.setattr("utils.server_manager.get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr("utils.subscription_store.get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr("utils.platform_utils.get_config_dir", lambda: tmp_path)
+    tw._reset()
+    (tmp_path / "settings.json").write_text('{"tun_mode": true}', encoding="utf-8")
+    from ui.main_window import RoundedWindow
+    win = RoundedWindow()
+    assert win.header_bar.tun_bar.is_checked() is True

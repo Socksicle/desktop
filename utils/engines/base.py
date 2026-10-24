@@ -18,10 +18,16 @@ from typing import NamedTuple
 from PySide6.QtCore import QObject, Signal
 
 from .proc_guard import (
+    assign_process_to_job,
     cleanup_stale_engines,
     wait_for_port_available,
     remove_pid_marker,
     write_pid_marker,
+)
+from .linux_death_guard import (
+    start_linux_death_guard,
+    stop_linux_death_guard,
+    LinuxDeathGuard,
 )
 from ..i18n import tr
 
@@ -35,16 +41,15 @@ DEFAULT_LOCAL_PORT = 1080
 def check_local_port(value) -> int:
     """Validate a local listen port, returning it as int.
 
-    Raises TypeError/ValueError/OverflowError for non-numeric,
-    out-of-range (1..65535), or boolean values (bool is a subclass
-    of int and must never pass as a port).
+    The value must already be an int: floats would be silently truncated and
+    numeric strings hide configuration mistakes. bool is a subclass of int and
+    must never pass as a port.
     """
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(value)
+    if not 1 <= value <= 65535:
         raise ValueError(value)
-    port = int(value)
-    if not 1 <= port <= 65535:
-        raise ValueError(value)
-    return port
+    return value
 
 log = logging.getLogger("engine")
 
@@ -159,6 +164,7 @@ class ProxyEngine(QObject):
         self._config_path: Path | None = None
         self._marker_name: str | None = None
         self._bind_error_reported = False
+        self._death_guard: LinuxDeathGuard | None = None
 
     def find_binary(self) -> Path | None:
         """Locate the engine binary on this system."""
@@ -178,10 +184,12 @@ class ProxyEngine(QObject):
         self._cleanup_config()
         fd, path = tempfile.mkstemp(prefix=config_prefix, suffix=".json")
         try:
-            os.close(fd)
-            with open(path, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # The file is still empty here; on Windows %TEMP% grants it
+                # inherited ACLs at creation, so secrets must be written only
+                # after the ACL has been restricted.
+                _secure_config_file(path)
                 json.dump(config, f, indent=2)
-            _secure_config_file(path)
         except (OSError, ValueError, TypeError):
             try:
                 os.unlink(path)
@@ -300,6 +308,8 @@ class ProxyEngine(QObject):
                     args,
                     **popen_kwargs,
                 )
+                assign_process_to_job(self.process)
+                self._death_guard = start_linux_death_guard(self.process)
                 self._marker_name = self.engine_type.value
                 write_pid_marker(self._marker_name, self.process.pid,
                                  str(binary))
@@ -350,6 +360,10 @@ class ProxyEngine(QObject):
                 was_connected = self.is_connected
                 self.is_connected = False
         if owned:
+            with self._lock:
+                if self._death_guard:
+                    stop_linux_death_guard(self._death_guard)
+                    self._death_guard = None
             self.connectionStateChanged.emit(False)
             if was_connected:
                 log.warning("%s exited unexpectedly (code=%s)",
@@ -435,6 +449,9 @@ class ProxyEngine(QObject):
 
     def teardown(self):
         with self._lock:
+            if self._death_guard:
+                stop_linux_death_guard(self._death_guard)
+                self._death_guard = None
             proc = self.process
             if proc:
                 pid = proc.pid

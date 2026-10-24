@@ -236,7 +236,12 @@ def decrypt_share_payload(key: str, token: str) -> tuple[str | list, dict]:
             elif "target" in data:
                 target_link = data["target"]
             metadata["lock_export"] = bool(data.get("lock_export", False))
-            metadata["expires_at"] = data.get("expires_at")
+            expires_at = data.get("expires_at")
+            # Untrusted share payload: a non-numeric expiry would crash the
+            # import slot when compared with the current time.
+            if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+                expires_at = None
+            metadata["expires_at"] = expires_at
             for k, v in data.items():
                 if k not in metadata and k not in ("target", "targets", "servers"):
                     metadata[k] = v

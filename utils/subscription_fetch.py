@@ -3,6 +3,7 @@ import http.client
 import ipaddress
 import logging
 import socket
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ MAX_SUBSCRIPTION_BYTES = 2 * 1024 * 1024
 _READ_CHUNK_SIZE = 64 * 1024
 MAX_SUBSCRIPTION_REDIRECTS = 5
 MAX_SUBSCRIPTION_NODES = 5000
+MAX_SUBSCRIPTION_READ_TIMEOUT = 15.0
 
 
 class _BlockedSubscription(ValueError):
@@ -104,6 +106,39 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         )
 
 
+_SENSITIVE_REDIRECT_HEADERS = frozenset({
+    "x-hwid",
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+})
+
+
+def _effective_port(parsed) -> int:
+    if parsed.port is not None:
+        return parsed.port
+    return 443 if parsed.scheme.lower() == "https" else 80
+
+
+def _is_cross_origin(url1: str, url2: str) -> bool:
+    p1 = urlparse(url1)
+    p2 = urlparse(url2)
+    return (
+        p1.scheme.lower() != p2.scheme.lower()
+        or (p1.hostname or "").lower() != (p2.hostname or "").lower()
+        or _effective_port(p1) != _effective_port(p2)
+    )
+
+
+def _strip_sensitive_headers(req) -> None:
+    for key in list(req.headers.keys()):
+        if key.lower() in _SENSITIVE_REDIRECT_HEADERS:
+            del req.headers[key]
+    for key in list(getattr(req, "unredirected_hdrs", {}).keys()):
+        if key.lower() in _SENSITIVE_REDIRECT_HEADERS:
+            del req.unredirected_hdrs[key]
+
+
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """HTTPRedirectHandler validating each hop and bounding their count."""
 
@@ -115,7 +150,10 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         if self._hops > MAX_SUBSCRIPTION_REDIRECTS:
             raise _BlockedSubscription(tr("sub.too_many_redirects"))
         _require_public_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None and _is_cross_origin(req.full_url, newurl):
+            _strip_sensitive_headers(new_req)
+        return new_req
 
 
 def _open_subscription_request(req, timeout=10):
@@ -123,7 +161,7 @@ def _open_subscription_request(req, timeout=10):
         _SafeRedirectHandler, _PinnedHTTPSHandler).open(req, timeout=timeout)
 
 
-def _read_limited_body(response):
+def _read_limited_body(response, timeout=MAX_SUBSCRIPTION_READ_TIMEOUT):
     try:
         declared = response.headers.get("Content-Length")
     except AttributeError:
@@ -134,8 +172,12 @@ def _read_limited_body(response):
         over_limit = False
     if over_limit:
         raise _BlockedSubscription(tr("sub.body_too_big"))
+    deadline = time.monotonic() + timeout
     body = bytearray()
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(tr("sub.net_timeout"))
         chunk = response.read(_READ_CHUNK_SIZE)
         if not chunk:
             break
