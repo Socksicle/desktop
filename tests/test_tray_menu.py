@@ -37,6 +37,7 @@ def main_win(qapp, monkeypatch, tmp_path):
     try:
         win.close()
         win.deleteLater()
+        qapp.processEvents()
     except Exception:
         pass
 
@@ -154,8 +155,9 @@ def test_tray_status_action_top_disabled(main_win):
     assert "Frankfurt-01" in tm.status_action.text()
 
 
-def test_tray_mode_switch(main_win):
+def test_tray_mode_switch(main_win, monkeypatch):
     win = main_win
+    monkeypatch.setattr(win, "_apply_tun_mode", lambda on: None)
     tm = win.tray_manager
 
     # Initially tun_mode is False
@@ -177,8 +179,11 @@ def test_tray_mode_switch(main_win):
     assert win.settings.get("tun_mode") is False
 
 
-def test_tray_server_checkboxes(main_win):
+def test_tray_server_checkboxes(main_win, monkeypatch):
     win = main_win
+    monkeypatch.setattr(win, "_on_connect_from_tray", lambda srv: None)
+    monkeypatch.setattr(win, "toggle_connection", lambda connect=None: None)
+    monkeypatch.setattr("ui.main_window.QTimer.singleShot", staticmethod(lambda ms, fn: None))
     tm = win.tray_manager
 
     # All server actions should be checkable

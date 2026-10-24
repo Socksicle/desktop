@@ -197,11 +197,6 @@ class TrayManager(QObject):
         return True
 
     def rebuild_menu(self, manual_servers, subscriptions):
-        for act in self.servers_menu.actions():
-            menu = act.menu()
-            if menu:
-                menu.deleteLater()
-            act.deleteLater()
         self.servers_menu.clear()
         self._server_actions = []
 
